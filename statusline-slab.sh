@@ -1,70 +1,168 @@
 #!/usr/bin/env bash
-# SLAB/MONO — Claude Code status line. Mirrors the tmux status bar (terminal/tmux.conf):
+# slab-deck statusline — Claude Code's status line slot in the SLAB Harness Statusline grammar:
 #
-#   ▌Opus 5▐ ▎slab-dark main*  high │ ctx 27% │ 5h 7% │ 1h34 │ +425 −67
-#   └ model: ACCENT fill      └ cwd: BG3 + left rule, like tmux's current window
+#    Opus 5.5    slab-deck main   effort high        ctx ████▌░░░░░ 35%   5h ██░░░░ 26%   7d █████▋ 94% 3d16h   cache 99%   ▁▃▅█   46m   +2592 −570
+#   └ route chip: FG inverted, never amber      └ values INK, labels DIM; gauges amber from 70 %, red from 90 %
 #
-# DIM labels, FG values, RULE+ separators. ctx / 5h ≥ 80 % turn into an ALERT fill block.
+# One BLOCK+ band (#1c1c1c), pad 1, left group then right group, 3 spaces between facts; lower-priority
+# facts drop first when the terminal is narrow. Hue on glyphs and outcome markers only.
 # Dollar cost is left out on purpose: on a subscription it is a notional API-price figure.
-# Install: ~/.claude/statusline-slab.sh, then in ~/.claude/settings.json:
-#   "statusLine": { "type": "command", "command": "~/.claude/statusline-slab.sh", "padding": 0 }
+# The slab-deck mod adds the output-per-turn sparkline via ${XDG_CACHE_HOME:-~/.cache}/slab-deck/<session>.json.
+# Cheap enough to re-run every second (statusLine.refreshInterval): no subshell per colour.
+#
+# Install, in ~/.claude/settings.json:
+#   "statusLine": { "type": "command", "command": "/path/to/slab-deck/statusline-slab.sh", "padding": 0, "refreshInterval": 1 }
+# Needs jq and git. SLAB_STATUSLINE_CAPTURE=<file> dumps the input JSON.
 
-export LC_ALL=C   # printf %.2f must not follow a de_DE decimal comma
+export LC_ALL=C.UTF-8
 in=$(cat)
 [ -n "$SLAB_STATUSLINE_CAPTURE" ] && printf '%s' "$in" > "$SLAB_STATUSLINE_CAPTURE"
 
-j() { jq -r "$1 // empty" <<<"$in" 2>/dev/null; }
+US=$'\x1f'
+IFS=$US read -r sid model effort dir pct ms add del five fiveAt seven sevenAt hit warm < <(jq -r '[
+  .session_id // "",
+  (.model.display_name // "" | sub(" \\(.*\\)$"; "")),
+  .effort.level // "",
+  .workspace.current_dir // .cwd // "",
+  (.context_window.used_percentage // "" | tostring),
+  (.cost.total_duration_ms // "" | tostring),
+  (.cost.total_lines_added // 0 | tostring),
+  (.cost.total_lines_removed // 0 | tostring),
+  (.rate_limits.five_hour.used_percentage // "" | tostring),
+  (.rate_limits.five_hour.resets_at // "" | tostring),
+  (.rate_limits.seven_day.used_percentage // "" | tostring),
+  (.rate_limits.seven_day.resets_at // "" | tostring),
+  (.prompt_cache.hit_ratio // null | if . == null then "" else (. * 100 | round | tostring) end),
+  (.prompt_cache.warm // "" | tostring)
+] | join("\u001f")' <<<"$in" 2>/dev/null)
 
-model=$(j '.model.display_name'); model=${model% (*}        # "Opus 5 (1M context)" -> "Opus 5"
-effort=$(j '.effort.level')
-five=$(j '.rate_limits.five_hour.used_percentage')
-dir=$(j '.workspace.current_dir // .cwd')
-pct=$(j '.context_window.used_percentage')
-dur=$(j '.cost.total_duration_ms')
-add=$(j '.cost.total_lines_added')
-del=$(j '.cost.total_lines_removed')
+outs=()
+spark="${XDG_CACHE_HOME:-$HOME/.cache}/slab-deck/${sid}.json"
+[ -n "$sid" ] && [ -r "$spark" ] && read -r -a outs < <(jq -r '(.outs // [])[-12:] | map(tostring) | join(" ")' "$spark" 2>/dev/null)
 
-# palette (truecolor)
-fg() { printf '\e[38;2;%d;%d;%dm' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}"; }
-bg() { printf '\e[48;2;%d;%d;%dm' "0x${1:0:2}" "0x${1:2:2}" "0x${1:4:2}"; }
-R=$'\e[0m'; B=$'\e[1m'
-BG0=0a0a0a BG3=202020 RULE2=3d3d3d DIM=9a9a9a FG=e8e8e8 ACC=e8e8e8 ALERT=8f8f8f
-SEP="$(fg $RULE2)│$R"
+# ---- tokens, as escape strings built once
+BAND=1c1c1c INK=e8e8e8 DIM=9a9a9a FAINT=6a6a6a RULE=2a2a2a GROUND=0a0a0a ATTN=e2a03f FAIL=e0705f OK=8fb573
+esc() { local h=$2; printf -v "$1" '\e[%s;2;%d;%d;%dm' "$3" "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
+for n in BAND INK DIM FAINT RULE GROUND ATTN FAIL OK; do esc "F$n" "${!n}" 38; esc "B$n" "${!n}" 48; done
 
-out=""
-# model block: accent fill, like the tmux session block
-[ -n "$model" ] && out+="$(bg $ACC)$(fg $BG0)$B ${model} $R "
+tone() { if (( $1 >= 90 )); then TF=$FFAIL; elif (( $1 >= 70 )); then TF=$FATTN; else TF=$FINK; fi; }
 
-# cwd block: BG3 + left rule, like the current tmux window
-if [ -n "$dir" ]; then
-  name=${dir##*/}; [ "$dir" = "$HOME" ] && name="~"
-  branch=$(git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$dir" rev-parse --short HEAD 2>/dev/null)
-  dirty=""; [ -n "$branch" ] && [ -n "$(git -C "$dir" status --porcelain -uno 2>/dev/null | head -1)" ] && dirty="*"
-  out+="$(bg $BG3)$(fg $ACC)▎$(fg $FG)$B${name}$R$(bg $BG3)"
-  [ -n "$branch" ] && out+=" $(fg $DIM)${branch}${dirty}"
-  out+=" $R "
-fi
-
-segs=()
-pctseg() {  # label value: DIM label + FG value, or ALERT fill block from 80 %
-  local p=${2%.*}
-  if [ "${p:-0}" -ge 80 ]; then segs+=("$(bg $ALERT)$(fg $BG0)$B $1 ${p}% $R")
-  else segs+=("$(fg $DIM)$1 $(fg $FG)${p}%$R"); fi
+EIGHTHS=(' ' '▏' '▎' '▍' '▌' '▋' '▊' '▉' '█')
+gauge() { # width pct -> G: filled in the value's tone, unfilled segments in RULE, to an eighth of a cell
+  local w=$1 p=$2 e x n; G=""
+  tone "$p"; e=$(( (p * w * 8 + 50) / 100 ))
+  for (( x = 0; x < w; x++ )); do
+    n=$(( e - x * 8 )); (( n < 0 )) && n=0; (( n > 8 )) && n=8
+    if (( n == 8 )); then G+="$TF█"
+    elif (( n == 0 )); then G+="$FRULE█"
+    else G+="$TF$BRULE${EIGHTHS[n]}$BBAND"; fi
+  done
 }
-[ -n "$effort" ] && segs+=("$(fg $DIM)${effort}$R")
-[ -n "$pct" ]  && pctseg ctx "$pct"
-[ -n "$five" ] && pctseg 5h "$five"
-if [ -n "$dur" ]; then
-  m=$(( ${dur%.*} / 60000 ))
-  if [ $m -ge 60 ]; then t="$((m/60))h$(printf '%02d' $((m%60)))"; else t="${m}m"; fi
-  segs+=("$(fg $DIM)${t}$R")
-fi
-if [ "${add:-0}" != 0 ] || [ "${del:-0}" != 0 ]; then
-  segs+=("$(fg $FG)+${add:-0} $(fg $DIM)−${del:-0}$R")
+
+clock() { # ms -> CL: 12s / 7m / 1h34
+  local s=$(( $1 / 1000 )) m
+  if (( s < 60 )); then CL="${s}s"; return; fi
+  m=$(( s / 60 ))
+  if (( m < 60 )); then CL="${m}m"; else printf -v CL '%dh%02d' $(( m / 60 )) $(( m % 60 )); fi
+}
+
+left_in() { # seconds -> LI: 42m / 3h12 / 3d16h
+  local s=$1 m h
+  (( s < 0 )) && s=0
+  m=$(( s / 60 )); h=$(( m / 60 ))
+  if (( h >= 24 )); then LI="$(( h / 24 ))d$(( h % 24 ))h"
+  elif (( h >= 1 )); then printf -v LI '%dh%02d' $h $(( m % 60 ))
+  else LI="${m}m"; fi
+}
+
+# ---- facts: text (ANSI), visible width, priority (0 never drops); left group then right group
+LT=(); LW=(); LP=(); RT=(); RW=(); RP=()
+left()  { LT+=("$1"); LW+=("$2"); LP+=("$3"); }
+right() { RT+=("$1"); RW+=("$2"); RP+=("$3"); }
+
+[ -n "$model" ] && left "$BINK$FGROUND ${model} $BBAND" $(( ${#model} + 2 )) 0
+
+if [ -n "$dir" ] && git_out=$(git -C "$dir" rev-parse --show-toplevel --abbrev-ref HEAD 2>/dev/null); then
+  root=${git_out%%$'\n'*}; branch=${git_out##*$'\n'}; repo=${root##*/}
+  left "$FINK${repo}$FDIM ${branch}" $(( ${#repo} + 1 + ${#branch} )) 1
+elif [ -n "$dir" ]; then
+  name=${dir##*/}; [ "$dir" = "$HOME" ] && name="~"
+  left "$FINK${name}" ${#name} 1
 fi
 
-for i in "${!segs[@]}"; do
-  [ "$i" -gt 0 ] && out+=" $SEP "
-  out+="${segs[$i]}"
+[ -n "$effort" ] && left "${FDIM}effort $FINK${effort}" $(( 7 + ${#effort} )) 4
+
+if [ -n "$pct" ]; then
+  p=${pct%.*}; gauge 10 "$p"; tone "$p"
+  right "${FDIM}ctx ${G}${TF} ${p}%" $(( 4 + 10 + 2 + ${#p} )) 0
+else
+  gauge 10 0; right "${FDIM}ctx ${G}${FINK} —" 16 0   # unknown until the first response: —, never 0
+fi
+
+printf -v now '%(%s)T' -1
+limit() { # label pct resets_at
+  local p=${2%.*} txt w
+  gauge 6 "$p"; tone "$p"
+  txt="${FDIM}$1 ${G}${TF} ${p}%"; w=$(( ${#1} + 1 + 6 + 2 + ${#p} ))
+  if (( p >= 70 )) && [ -n "$3" ]; then
+    left_in $(( ${3%.*} - now )); txt+="$FFAINT ${LI}"; w=$(( w + 1 + ${#LI} ))
+  fi
+  # A window at 70 % or more outranks the repo name; under it, it drops after the clock.
+  right "$txt" "$w" $(( p >= 70 ? 1 : 2 ))
+}
+[ -n "$five" ] && limit 5h "$five" "$fiveAt"
+[ -n "$seven" ] && limit 7d "$seven" "$sevenAt"
+
+if [ "$warm" = "false" ]; then
+  right "${FATTN}! ${FDIM}cache cold" 12 5
+elif [ -n "$hit" ]; then
+  right "${FDIM}cache $FINK${hit}%" $(( 7 + ${#hit} )) 5
+fi
+
+if (( ${#outs[@]} > 1 )); then
+  TICKS=('▁' '▂' '▃' '▄' '▅' '▆' '▇' '█')
+  max=1; for o in "${outs[@]}"; do (( o > max )) && max=$o; done
+  s=""; k=0
+  for o in "${outs[@]}"; do
+    k=$(( k + 1 )); i=$(( o * 7 / max ))
+    if (( k == ${#outs[@]} )); then s+="$FINK${TICKS[i]}"; else s+="$FDIM${TICKS[i]}"; fi
+  done
+  right "$s" ${#outs[@]} 6
+fi
+
+if [ -n "$ms" ]; then clock "${ms%.*}"; right "$FINK${CL}" ${#CL} 3; fi
+right "$FOK+${add}$FFAIL −${del}" $(( 3 + ${#add} + ${#del} )) 2
+
+# ---- width: the pane's when inside tmux, else the controlling terminal's; Claude Code indents the line
+cols=""
+[ -n "$TMUX_PANE" ] && cols=$(tmux display-message -p -t "$TMUX_PANE" '#{pane_width}' 2>/dev/null)
+[ -z "$cols" ] && cols=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2)
+[ -z "$cols" ] && cols=${COLUMNS:-0}
+W=$(( cols > 4 ? cols - 4 : 0 ))
+
+total() { local x; TOT=2
+  for x in "${LW[@]}" "${RW[@]}"; do TOT=$(( TOT + x )); done
+  TOT=$(( TOT + 3 * (${#LW[@]} > 0 ? ${#LW[@]} - 1 : 0) + 3 * (${#RW[@]} > 0 ? ${#RW[@]} - 1 : 0) + 3 )); }
+
+# Fit: drop the highest-priority fact (right group first on a tie) until the band holds the rest.
+total
+while (( W > 0 && TOT > W )); do
+  worst=0; side=""; at=-1
+  for i in "${!RP[@]}"; do (( RP[i] >= worst && RP[i] > 0 )) && { worst=${RP[i]}; side=R; at=$i; }; done
+  for i in "${!LP[@]}"; do (( LP[i] > worst )) && { worst=${LP[i]}; side=L; at=$i; }; done
+  (( at < 0 )) && break
+  if [ $side = R ]; then unset 'RT[at]' 'RW[at]' 'RP[at]'; RT=("${RT[@]}"); RW=("${RW[@]}"); RP=("${RP[@]}")
+  else unset 'LT[at]' 'LW[at]' 'LP[at]'; LT=("${LT[@]}"); LW=("${LW[@]}"); LP=("${LP[@]}"); fi
+  total
 done
+
+out="$BBAND "
+for i in "${!LT[@]}"; do (( i > 0 )) && out+="   "; out+="${LT[i]}"; done
+gap=3
+(( W > 0 )) && gap=$(( W - TOT + 3 ))
+(( gap < 3 )) && gap=3
+printf -v pad '%*s' "$gap" ''
+out+=$pad
+for i in "${!RT[@]}"; do (( i > 0 )) && out+="   "; out+="${RT[i]}"; done
+out+=" "$'\e[0m'
 printf '%s' "$out"

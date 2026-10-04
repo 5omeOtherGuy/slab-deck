@@ -2,8 +2,8 @@
 // the deck pane's sections (Pane: DIM titles, label DIM / value INK rows), the popups (Block bands).
 import type { Elements, RenderElement } from 'claude-code'
 
-import type { AgentRec, BandMode, CtxSnap, GitSnap, Live, Metrics, Popup, TmuxSnap, ToolRec, TurnRec } from '../types'
-import { C, category, clip, columns, dur, gauge, grid, hex, lanes, levelHex, limitLabel, minimap, pad, slab, spark, tokens, took, toolName, until, working, type Canvas } from './ink'
+import type { AgentRec, CtxSnap, GitSnap, Live, Metrics, Popup, TmuxSnap, ToolRec, TurnRec } from '../types'
+import { C, category, clip, columns, dur, gauge, grid, hex, lanes, levelHex, limitLabel, minimap, pad, slab, tokens, took, toolName, until, working, type Canvas } from './ink'
 
 export type T = Elements['terminal']
 
@@ -65,177 +65,33 @@ function sessionMs(v: View): number | null {
   return v.m.startedAt > 0 ? v.now - v.m.startedAt : null
 }
 
-// ---- above the prompt: the statusline band (BLOCK+) and the hint row (BLOCK)
+// ---- above the prompt: the hint row (BLOCK). The statusline itself is Claude Code's own slot,
+// drawn by statusline-slab.sh (mods have no render site there); this mod hands it the sparkline.
 
-type Seg = { id: string; w: number; prio: number; node: RenderElement; card?: string }
-
-function seg(v: View, s: Seg, withCard: boolean): RenderElement {
-  const { Box, Text } = v.T
-  return (
-    <Box key={`seg-${s.id}`} flexDirection="row">
-      {s.node}
-      {withCard && s.card !== undefined && (
-        <Box position="absolute" top={1} left={0} display="none" hover={{ display: 'flex' }} backgroundColor={C.CONTROL} paddingX={1}>
-          <Text color={C.INK}>{clip(s.card, Math.max(10, v.width - 8))}</Text>
-        </Box>
-      )}
-    </Box>
-  )
-}
-
-export function Band(v: View, mode: BandMode, isWorking: boolean, still: boolean): RenderElement {
-  const { Box, Text } = v.T
-  const name = modelName(v.m.model)
-  const left: Seg[] = [
-    {
-      id: 'route',
-      w: name.length + 2,
-      prio: 0,
-      node: (
-        <Text backgroundColor={C.INK} color={C.GROUND}>
-          {` ${name} `}
-        </Text>
-      ),
-      card: `${v.m.model || '—'} · window ${tokens(v.m.ctxWindow)} · effort ${v.m.effort ?? '—'}`,
-    },
-  ]
-  if (v.git) {
-    const repo = v.git.root.split('/').pop() ?? ''
-    left.push({
-      id: 'repo',
-      w: 3 + repo.length + 1 + v.git.branch.length,
-      prio: 1,
-      node: (
-        <Text>
-          <Text color={C.INK}>{`   ${repo}`}</Text>
-          <Text color={C.DIM}>{` ${v.git.branch}`}</Text>
-        </Text>
-      ),
-      card: `${v.git.files.length} changed · ↑${v.git.ahead} ↓${v.git.behind} · ${v.git.commits[0]?.subject ?? 'no commits'}`,
-    })
-  }
-  left.push({
-    id: 'effort',
-    w: 10 + (v.m.effort ?? '—').length,
-    prio: 4,
-    node: (
-      <Text>
-        <Text color={C.DIM}>{'   effort '}</Text>
-        <Text color={C.INK}>{v.m.effort ?? '—'}</Text>
-      </Text>
-    ),
-  })
-
-  const right: Seg[] = []
-  const pct = v.m.ctxPct === null ? null : Math.round(v.m.ctxPct)
-  right.push({
-    id: 'ctx',
-    w: 4 + 10 + 1 + (pct === null ? 1 : String(pct).length + 1),
-    prio: 0,
-    node: (
-      <Box flexDirection="row">
-        <Text color={C.DIM}>ctx </Text>
-        {paint(v, 'g-ctx', gauge(10, pct ?? 0), bar(pct ?? 0, 10))}
-        <Text color={pct === null ? C.INK : levelHex(pct)}>{pct === null ? ' —' : ` ${pct}%`}</Text>
-      </Box>
-    ),
-    card: `${tokens(v.m.ctxTokens)} of ${tokens(v.m.ctxWindow)} in the window · ${v.m.ctxTokens === null ? '—' : tokens(v.m.ctxWindow - v.m.ctxTokens)} free`,
-  })
-  v.m.limits.forEach((l, i) => {
-    const p = Math.round(l.pct)
-    const lab = limitLabel(l.kind)
-    right.push({
-      id: `lim${i}`,
-      w: 3 + lab.length + 1 + 6 + 1 + String(p).length + 1,
-      prio: i === 0 ? 2 : 5,
-      node: (
-        <Box flexDirection="row">
-          <Text color={C.DIM}>{`   ${lab} `}</Text>
-          {paint(v, `g-lim${i}`, gauge(6, p), bar(p, 6))}
-          <Text color={levelHex(p)}>{` ${p}%`}</Text>
-        </Box>
-      ),
-      card: `${lab} window · ${p}% used · resets in ${until(l.resetsAt, v.now)}`,
-    })
-  })
-  const outs = v.turns.map(t => t.outTokens)
-  if (outs.length > 1)
-    right.push({
-      id: 'spark',
-      w: 3 + 12,
-      prio: 6,
-      node: (
-        <Box flexDirection="row">
-          <Text>{'   '}</Text>
-          {paint(v, 'g-spark', spark(outs, 12), '')}
-        </Box>
-      ),
-      card: `output per turn · last ${tokens(outs.at(-1))} · peak ${tokens(Math.max(...outs))}`,
-    })
-  const clock = dur(sessionMs(v))
-  right.push({ id: 'clock', w: 3 + clock.length, prio: 3, node: <Text color={C.INK}>{`   ${clock}`}</Text>, card: `${v.turns.length} turns · ${v.tools.length} tool calls · ${v.agents.length} subagents` })
-  if (v.git)
-    right.push({
-      id: 'diff',
-      w: 4 + String(v.git.added).length + 2 + String(v.git.removed).length,
-      prio: 1,
-      node: (
-        <Text>
-          <Text color={C.OK}>{`   +${v.git.added}`}</Text>
-          <Text color={C.FAIL}>{` −${v.git.removed}`}</Text>
-        </Text>
-      ),
-      card: v.git.files.slice(0, 4).map(f => `${f.path} +${f.add} −${f.del}`).join(' · ') || 'clean',
-    })
-
-  // Fit: drop the highest prio across both groups until the band's inner width holds them.
-  const inner = v.width - 2
-  const widthOf = (list: Seg[]) => list.reduce((n, s) => n + s.w, 0)
-  let l = left
-  let r = right
-  while (widthOf(l) + widthOf(r) + 2 > inner && l.length + r.length > 2) {
-    const worst = Math.max(...[...l, ...r].filter(s => s.prio > 0).map(s => s.prio))
-    if (!Number.isFinite(worst)) break
-    const inR = r.map(s => s.prio).lastIndexOf(worst)
-    if (inR >= 0) r = r.filter((_, k) => k !== inR)
-    else l = l.filter((_, k) => k !== l.map(s => s.prio).lastIndexOf(worst))
-  }
-  const cards = mode === 'full'
-  const statusline = (
-    <Box flexDirection="row" justifyContent="space-between" backgroundColor={C.PLUS} width={v.width} paddingX={1}>
-      <Box flexDirection="row">{l.map(s => seg(v, s, cards))}</Box>
-      <Box flexDirection="row">{r.map(s => seg(v, s, cards))}</Box>
-    </Box>
-  )
-  if (mode === 'compact') return statusline
-  return (
-    <Box flexDirection="column" width={v.width}>
-      {statusline}
-      {isWorking || v.live.turnId !== null ? Working(v, still) : Hints(v)}
-    </Box>
-  )
+export function Band(v: View, isWorking: boolean, still: boolean): RenderElement {
+  return isWorking ? Working(v, still) : Hints(v)
 }
 
 function Working(v: View, still: boolean): RenderElement {
   const { Box, Text } = v.T
   const elapsed = v.live.startedAt > 0 ? v.now - v.live.startedAt : 0
   const running = v.live.running
+  // value INK then its unit DIM: `1m04 · 3 step · 1.2k tok · 84 tok/s`
   const facts: [string, string][] = [
-    ['', dur(elapsed)],
-    ['step ', String(v.live.step || '—')],
-    ['', tokens(v.live.chars / 4)],
-    ['tok/s ', v.live.rate > 0 ? String(Math.round(v.live.rate / 4)) : '—'],
+    [dur(elapsed), ''],
+    [String(v.live.step || '—'), ' step'],
+    [v.live.tokens > 0 ? tokens(v.live.tokens) : '—', ' tok'],
+    [v.live.rate > 0 ? String(Math.round(v.live.rate / 4)) : '—', ' tok/s'],
   ]
   return (
     <Box flexDirection="row" backgroundColor={C.BLOCK} width={v.width} paddingX={1}>
       {paint(v, 'work', working(v.now, C.BLOCK, still), '▪▪▪')}
       <Text color={C.DIM}>{'  '}</Text>
-      {facts.map(([label, value], k) => (
+      {facts.map(([value, unit], k) => (
         <Text key={`wf-${k}`}>
           {k > 0 && <Text color={C.DIM}> · </Text>}
-          {label && <Text color={C.DIM}>{label}</Text>}
           <Text color={C.INK}>{value}</Text>
-          {k === 2 && <Text color={C.DIM}> tok</Text>}
+          {unit && <Text color={C.DIM}>{unit}</Text>}
         </Text>
       ))}
       {running.length > 0 && <Text color={C.LIVE}>{'   ▸ '}</Text>}
@@ -278,11 +134,11 @@ function Hints(v: View): RenderElement {
 
 // ---- the deck pane
 
-type Extra = { ctx: CtxSnap | null; peek: string | null; peekLines: string[] }
+type Extra = { ctx: CtxSnap | null; peek: string | null; peekLines: string[]; rows: number; intro: boolean }
 
 export function Deck(v0: View, current: string, extra: Extra): RenderElement {
   const v = { ...v0, width: Math.max(20, v0.width - 4) }
-  const { Box, Button } = v.T
+  const { Box, Button, Text } = v.T
   const body =
     current === 'context' ? Context(v, extra.ctx)
     : current === 'tools' ? Tools(v)
@@ -290,13 +146,19 @@ export function Deck(v0: View, current: string, extra: Extra): RenderElement {
     : current === 'git' ? Git(v)
     : current === 'tmux' ? Tmux(v, extra.peek, extra.peekLines)
     : current === 'usage' ? Usage(v)
-    : Overview(v)
+    : Overview(v, extra.intro)
   return (
-    <Box flexDirection="column" width={v0.width} backgroundColor={C.BLOCK} paddingX={2}>
+    <Box flexDirection="column" width={v0.width} minHeight={extra.rows} backgroundColor={C.BLOCK} paddingX={2}>
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-        {SECTIONS.map((s, i) => (
-          <Button key={`t-${s}`} plain hotkey={String(i + 1)} label={s} dimColor={s !== current} onPress={() => v.act.setSection(s)} />
-        ))}
+        {SECTIONS.map((s, i) =>
+          s === current ? (
+            <Text key={`t-${s}`} backgroundColor={C.PLUS} color={C.INK} bold>
+              {` ${i + 1} ${s} `}
+            </Text>
+          ) : (
+            <Button key={`t-${s}`} plain hotkey={String(i + 1)} label={s} dimColor onPress={() => v.act.setSection(s)} />
+          ),
+        )}
       </Box>
       {body}
     </Box>
@@ -325,7 +187,8 @@ function Row(v: View, key: string, label: string, value: string, tone: string = 
   )
 }
 
-function Overview(v: View): RenderElement {
+/** `intro`: the gauges are drawn empty, for the opening sweep to fill them (register.tsx glide). */
+function Overview(v: View, intro: boolean): RenderElement {
   const { Box, Text, Button } = v.T
   const W = v.width
   const pct = Math.round(v.m.ctxPct ?? 0)
@@ -341,12 +204,12 @@ function Overview(v: View): RenderElement {
       {Row(v, 'ov-tools', 'tool calls', String(v.tools.length))}
       {Row(v, 'ov-agents', 'subagents', running > 0 ? `▪ ${running} running` : String(v.agents.length), running > 0 ? C.LIVE : C.INK)}
       {Section(v, 'context window', `${tokens(v.m.ctxTokens)} / ${tokens(v.m.ctxWindow)}`)}
-      {paint(v, 'ov-ctx', slab(W, 2, pct, v.m.ctxPct === null ? ' — ' : ` ${pct}% `), `${bar(pct, 30)} ${pct}%`)}
+      {paint(v, 'ov-ctx', slab(W, 2, intro ? 0 : pct, v.m.ctxPct === null ? ' — ' : ` ${intro ? 0 : pct}% `), `${bar(pct, 30)} ${pct}%`)}
       {v.m.limits.length > 0 && Section(v, 'rate limits', 'resets in')}
       {v.m.limits.map((l, i) => (
         <Box key={`ov-l${i}`} flexDirection="row" width={W}>
           <Text color={C.DIM}>{pad(limitLabel(l.kind), 4)}</Text>
-          {paint(v, `ov-lg${i}`, gauge(Math.max(6, W - 16), l.pct), bar(l.pct, 20))}
+          {paint(v, `ov-lg${i}`, gauge(Math.max(6, W - 16), intro ? 0 : l.pct), bar(l.pct, 20))}
           <Text color={levelHex(l.pct)}>{` ${pad(`${Math.round(l.pct)}%`, 5)}`}</Text>
           <Text color={C.FAINT}>{until(l.resetsAt, v.now)}</Text>
         </Box>
@@ -423,7 +286,7 @@ function Context(v: View, c: CtxSnap | null): RenderElement {
               </Text>
               <Box flexDirection="row">
                 <Text color={C.INK}>{pad(tokens(k.tokens), 7)}</Text>
-                {paint(v, `cx-b-${k.name}`, gauge(8, (k.tokens / max) * 100), '')}
+                {paint(v, `cx-b-${k.name}`, gauge(8, (k.tokens / max) * 100, undefined, true), '')}
               </Box>
             </Box>
           ))}
@@ -464,7 +327,7 @@ function Tools(v: View): RenderElement {
         return (
           <Box key={`tb-${name}`} flexDirection="row" width={v.width}>
             <Text color={C.DIM}>{pad(name, 11)}</Text>
-            {paint(v, `tb-g-${name}`, gauge(Math.max(6, v.width - 30), (list.length / max) * 100), '')}
+            {paint(v, `tb-g-${name}`, gauge(Math.max(6, v.width - 30), (list.length / max) * 100, undefined, true), '')}
             <Text color={C.INK}>{` ${pad(String(list.length), 4)}`}</Text>
             <Text color={C.DIM}>{pad(took(total), 7)}</Text>
             {errs > 0 && <Text color={C.FAIL}>✗</Text>}
@@ -667,7 +530,7 @@ function Usage(v: View): RenderElement {
       {Row(v, 'us-cr', 'cache read', tokens(cr))}
       {Row(v, 'us-cw', 'cache write', tokens(cw))}
       {Section(v, 'cache hit', hit === null ? '—' : `${Math.round(hit)}%`)}
-      {paint(v, 'us-hit', gauge(v.width, hit === null ? 0 : 100 - hit), bar(hit ?? 0, 20))}
+      {paint(v, 'us-hit', gauge(v.width, hit === null ? 0 : 100 - hit, undefined, true), bar(hit ?? 0, 20))}
       <Text color={C.FAINT}>the bar is the uncached share · short is good</Text>
       {Section(v, 'turn durations', durs.length > 0 ? `longest ${dur(Math.max(...durs) * 1000)}` : '—')}
       {durs.length > 0 && paint(v, 'us-dur', columns(durs, v.width, 3), '')}
@@ -782,14 +645,4 @@ export function Pop(v: View, p: Popup): RenderElement {
       </Box>
     </Box>
   )
-}
-
-/** The plain status line, for when the band is off: the statusline's facts as one string. */
-export function statusText(m: Metrics, now: number): string {
-  const segs: string[] = [modelName(m.model)]
-  if (m.effort) segs.push(`effort ${m.effort}`)
-  segs.push(`ctx ${m.ctxPct === null ? '—' : `${Math.round(m.ctxPct)}%`}`)
-  for (const l of m.limits.slice(0, 2)) segs.push(`${limitLabel(l.kind)} ${Math.round(l.pct)}%`)
-  if (m.startedAt > 0) segs.push(dur(now - m.startedAt))
-  return segs.join('   ')
 }

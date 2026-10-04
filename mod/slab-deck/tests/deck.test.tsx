@@ -10,6 +10,7 @@ function engine(on: On): void {
   on('ui.status', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
+  on('session.usage', () => ({ value: { startedAt: 1, context: { window: 200000 }, rateLimits: [] } }))
 }
 
 const BAND = (bodyColumns: number) => ({
@@ -31,23 +32,24 @@ const LIST_PANES = [
   .map(r => r.join('\t'))
   .join('\n')
 
-test('the band draws the facts as gauges on the terminal and as text on the desktop', async ($, on) => {
+test('the band leaves the statusline to Claude Code and draws the hint row', async ($, on) => {
   engine(on)
   await $.session.measure({
     context: { tokens: 54000, window: 200000, percent: 27 },
     rateLimits: [{ kind: 'five_hour', percentUsed: 84, resetsAt: '2030-01-01T00:00:00Z' }],
     changed: ['context', 'rateLimits'],
   })
-  const term = await $.ui.mount({ plugin: 'slab-deck', surface: 'terminal', ...BAND(160) })
-  expect(await term.find({ type: 'Raster', key: 'g-ctx' })).toBeDefined()
-  expect(await term.find({ type: 'Text', text: /27%/ })).toBeDefined()
-  expect(await term.find({ type: 'Text', text: /84%/ })).toBeDefined()
-  await term.unmount()
-
-  const desk = await $.ui.mount({ plugin: 'slab-deck', surface: 'desktop', ...BAND(160) })
-  expect(await desk.find({ type: 'Raster' })).toBeUndefined()
-  expect(await desk.find({ type: 'Text', text: /█+░+/ })).toBeDefined()
-  await desk.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ plugin: 'slab-deck', surface, ...BAND(160) })
+    expect(await band.find({ type: 'Text', text: /27%|84%/ })).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: /not in tmux/ })).toBeDefined()
+    expect(await band.find({ type: 'Button', key: 'b-deck' })).toBeDefined()
+    await band.unmount()
+  }
+  const deck = await $.ui.mount({ plugin: 'slab-deck', surface: 'desktop', ...PANE('deck') })
+  expect(await deck.find({ type: 'Raster' })).toBeUndefined()
+  expect(await deck.find({ type: 'Text', text: /█+░+/ })).toBeDefined()
+  await deck.unmount()
 })
 
 test('tmux windows become band links, and a link selects that window', async ($, on) => {
@@ -119,14 +121,13 @@ test('no drawing holds a box-drawing character (SLAB Harness: none, ever)', asyn
     const stdout = e.argv[1] === 'display-message' ? 'main\n' : e.argv[1] === 'list-panes' ? LIST_PANES : 'x\n'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }))
   const box = /[─-╿]/
   const band = await $.ui.mount({ plugin: 'slab-deck', surface: 'terminal', ...BAND(160) })
   expect(box.test(JSON.stringify(await band.drawn()))).toBe(false)
   await band.unmount()
   const deck = await $.ui.mount({ plugin: 'slab-deck', surface: 'terminal', ...PANE('deck') })
   await deck.press({ key: 'ov-refresh' })
-  for (const s of ['overview', 'tools', 'agents', 'git', 'tmux', 'usage']) {
+  for (const s of ['tools', 'agents', 'git', 'tmux', 'usage', 'overview']) {
     await deck.press({ key: `t-${s}` })
     expect(box.test(JSON.stringify(await deck.drawn()))).toBe(false)
   }
@@ -141,17 +142,30 @@ test('a turn streams into the hint row and lands in usage', async ($, on) => {
     return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: { model: e.model, input_tokens: 1200, output_tokens: 3400, cache_read_input_tokens: 9000, cache_creation_input_tokens: 300 } } as never
   })
   on('turn.complete', ($, e) => ({ text: e.answer }))
+  mock.env(on, { HOME: '/home/u' })
+  on('session.id', () => ({ value: 's1' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('command.register', () => ({ value: undefined }) as never)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  const writes: [string, string][] = []
+  on('fs.write', ($, e) => {
+    writes.push([e.path, e.text])
+    return { value: undefined }
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ source: 'startup', cwd: '/home/u' } as never)
   await $.turn.start({ text: 'hi', turnId: 't1' })
   const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 } as never)
   for await (const _ of stream) {
     const band = await $.ui.mount({ plugin: 'slab-deck', surface: 'terminal', ...BAND(160) })
     expect(await band.find({ type: 'Raster', key: 'work' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: 'high' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '100' })).toBeDefined()
     await band.unmount()
   }
   await stream.result
   await $.turn.complete({ answer: 'ok', durationMs: 65000, isAborted: false, turnId: 't1', reason: 'answer' } as never)
 
+  expect(writes).toContainEqual(['/home/u/.cache/slab-deck/s1.json', JSON.stringify({ outs: [3400] })])
   const band = await $.ui.mount({ plugin: 'slab-deck', surface: 'terminal', ...BAND(160) })
   expect(await band.find({ type: 'Raster', key: 'work' })).toBeUndefined()
   await band.unmount()

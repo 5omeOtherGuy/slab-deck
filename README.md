@@ -1,19 +1,28 @@
 # slab-deck
 
-A control center for [Claude Code](https://claude.com/claude-code), built as a mod on its function-hooks
-plugin API (Claude Code 2.1.289 or newer). It replaces the one-line status line with a live band above the
-prompt, a docked deck pane, popups and tmux navigation, all in the SLAB design language: dark surfaces,
-hue only on glyphs and outcome markers (`› ▸ ✓ ✗ ! · ↳ ▪`), no box drawing, one motion.
+A control center for [Claude Code](https://claude.com/claude-code) in the SLAB design language: dark
+surfaces, hue only on glyphs and outcome markers (`› ▸ ✓ ✗ ! · ↳ ▪`), no box drawing.
+Two parts that work together:
+
+- `statusline-slab.sh` fills Claude Code's own status line slot with gauges in true colour.
+- `mod/slab-deck` is a mod on the function-hooks plugin API (Claude Code 2.1.289+): a live band above
+  the prompt, a docked deck pane, popups and tmux navigation.
+
+![slab-deck while a turn runs](docs/working.png)
 
 ## What it shows
 
-**Band above the prompt**
-- Statusline row: model, repo and branch, effort, gauges for context and the 5h / 7d rate-limit windows
-  (amber from 70 %, red from 90 %), output-per-turn sparkline, session clock, `+N −N`. Hover a fact for details.
-- Second row: while a turn runs, a ▪▪▪ working indicator with elapsed time, step, tokens, tok/s and running
-  tools; when idle, your tmux windows as links (`1`–`9`) and actions (`d` deck, `n` window, `s` split, `h` keys).
+**Statusline** (Claude Code's status line slot): model, repo and branch, effort | context, 5h and 7d
+rate-limit gauges (amber from 70 %, red from 90 %, reset countdown once a window passes 70 %), prompt-cache
+hit rate, output-per-turn sparkline (handed over by the mod), session clock, lines `+N −N`. Facts drop by
+priority when the terminal narrows; a window at 70 % or more outlasts the repo name.
+
+**Band above the prompt**: while a turn runs, the animated ▪▪▪ working indicator with elapsed time, step,
+tokens, tok/s and the tools running; when idle, your tmux windows as links (`1`–`9`) and actions
+(`d` deck, `n` window, `s` split, `h` keys).
 
 **Deck pane** — `/deck [section]`
+
 | section | contents |
 | --- | --- |
 | overview | session facts, context, rate limits and resets, output per turn, recent tool calls |
@@ -26,8 +35,14 @@ hue only on glyphs and outcome markers (`› ▸ ✓ ✗ ! · ↳ ▪`), no box 
 
 **Popups** for a tool call, a turn, a tmux pane and the key list (`esc` closes).
 
+**Animations**: the ▪▪▪ indicator breathes while a turn runs; the deck's context and rate-limit gauges sweep
+up when it opens and glide to each new value. Both repaint cells in place (`$.ui.blit`), no redraw.
+`P1_REDUCED_MOTION=1` or `SLAB_REDUCED_MOTION=1` freezes them.
+
 Also `/deck-band full|compact|off` and toasts when context or a rate limit crosses 80 %.
 The tmux actions only select, open or split; nothing closes, kills or types into another pane.
+
+![slab-deck idle](docs/idle.png)
 
 ## Install
 
@@ -36,11 +51,15 @@ git clone https://github.com/5omeOtherGuy/slab-deck
 claude --plugin-dir slab-deck/mod/slab-deck
 ```
 
-To load it in every session, add to `~/.claude/settings.json`:
+For every session, in `~/.claude/settings.json`:
 
 ```json
-"env": { "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/slab-deck/mod/slab-deck" }
+"env": { "CLAUDE_CODE_PLUGIN_DIRS": "/path/to/slab-deck/mod/slab-deck" },
+"statusLine": { "type": "command", "command": "/path/to/slab-deck/statusline-slab.sh", "padding": 0, "refreshInterval": 2 }
 ```
+
+The statusline needs `jq` and `git`, and works without the mod (no sparkline then). `refreshInterval`
+re-fits it after a resize and keeps its clock and countdowns current; one run takes about 60 ms.
 
 tmux and git features turn on by themselves when Claude Code runs inside tmux or a git repository.
 `P1_REDUCED_MOTION=1` or `SLAB_REDUCED_MOTION=1` freezes the working indicator.
@@ -59,16 +78,6 @@ claude plugin test mod/slab-deck
 | `hooks/ink.ts` | design tokens and the Raster painters (gauges, charts, minimap, working indicator) |
 | `hooks/data.ts` | git and tmux output parsers |
 | `types/index.d.ts` | the `$.state` contract |
-
-## Classic status line
-
-`statusline-slab.sh` is the original one-line bash status line, for Claude Code without mods:
-
-```json
-"statusLine": { "type": "command", "command": "/path/to/slab-deck/statusline-slab.sh", "padding": 0 }
-```
-
-Needs `jq` and `git`.
 
 ## License
 

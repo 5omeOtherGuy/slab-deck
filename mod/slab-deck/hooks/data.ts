@@ -97,5 +97,5 @@ export function parseTmux(out: string, session: string, self: string | null): Tm
 
 /** The last `lines` rows of a capture, trailing blank rows dropped. */
 export function lastLines(out: string | null, lines: number): string[] {
-  return (out ?? '').replace(/\s+$/, '').split('\n').slice(-lines)
+  return (out ?? '').replace(/\s+$/, '').split('\n').map(l => l.replace(/\s+$/, '')).slice(-lines)
 }

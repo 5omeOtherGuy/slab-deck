@@ -83,10 +83,13 @@ export function took(ms: number | null | undefined): string {
   return ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : dur(ms)
 }
 
+/** Time left until `iso`: `42m`, `3h12`, `3d17h` (as the statusline writes resets). */
 export function until(iso: string | null, now: number): string {
   if (iso === null) return '—'
   const t = Date.parse(iso)
-  return Number.isNaN(t) ? '—' : dur(Math.max(0, t - now))
+  if (Number.isNaN(t)) return '—'
+  const h = Math.floor(Math.max(0, t - now) / 3600000)
+  return h >= 24 ? `${Math.floor(h / 24)}d${h % 24}h` : dur(Math.max(0, t - now))
 }
 
 export function clip(text: string, width: number): string {
@@ -170,10 +173,13 @@ export class Canvas {
 const EIGHTHS = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
 const TICKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 
-/** A bar to an eighth of a cell: filled in the value's tone, unfilled segments in RULE. */
-export function gauge(width: number, pct: number, mark?: number): Canvas {
+/**
+ * A bar to an eighth of a cell, unfilled segments in RULE. Filled in the value's tone (INK, ATTN,
+ * FAIL) for a level that can run out; `neutral` fills DIM, for a share or a count that cannot.
+ */
+export function gauge(width: number, pct: number, mark?: number, neutral: boolean = false): Canvas {
   const c = new Canvas(width, 1)
-  const fill = rgb(levelHex(pct))
+  const fill = rgb(neutral ? C.DIM : levelHex(pct))
   const track = rgb(C.RULE)
   const eighths = Math.round((Math.max(0, Math.min(100, pct)) / 100) * width * 8)
   for (let x = 0; x < width; x++) {
@@ -329,7 +335,7 @@ export function minimap(
     const y0 = Math.floor(p.top * sy)
     const x1 = Math.max(x0 + 1, Math.floor((p.left + p.width + 1) * sx) - 2)
     const y1 = Math.max(y0, Math.floor((p.top + p.height + 1) * sy) - 1)
-    const isPick = p.id === pick
+    const isPick = p.id === pick && p.id !== self
     const isSelf = p.id === self
     const bg = rgb(isPick ? C.ATTN : isSelf ? C.RULE2 : C.PLUS)
     const fg = rgb(isPick ? C.GROUND : isSelf ? C.INK : C.FAINT)

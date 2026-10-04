@@ -28,6 +28,7 @@ export type Live = {
   startedAt: number
   step: number
   chars: number
+  tokens: number
   rate: number
   running: string[]
 }

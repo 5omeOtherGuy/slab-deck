@@ -1,17 +1,18 @@
 // slab-deck: the Claude Code control center in the SLAB Harness design language.
-//   band   AbovePrompt: the statusline (route chip, repo branch, effort | ctx and limit gauges, output
-//          sparkline, clock, +/−) with hover cards; a hint row with the ▪▪▪ working indicator (blitted)
-//          and the turn's facts, or tmux window links and actions
+//   statusline  Claude Code's own slot, drawn by statusline-slab.sh (mods have no render site there);
+//               this mod writes it the output-per-turn sparkline
+//   band   AbovePrompt hint row: the ▪▪▪ working indicator (blitted) with the turn's facts, or tmux window
+//          links and actions
 //   deck   Pane `deck`: overview, context (the /context grid), tools (timeline), agents, git, tmux, usage
 //   popups Pane `deck-pop` as a dialog: tool call, turn, tmux pane peek, keys
-//   also   /deck, /deck-band, the prompt hint tail, threshold toasts, the plain status line when the band is off
+//   also   /deck, /deck-band, the prompt hint tail, threshold toasts
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { AgentRec, BandMode, CtxSnap, GitSnap, Live, Metrics, Popup, TmuxSnap, ToolRec, TurnRec } from '../types'
 import { GIT_LOG, GIT_NUMSTAT, GIT_STATUS, PANE_FORMAT, lastLines, parseGit, parseTmux } from './data'
-import { C, dur, working } from './ink'
-import { Band, Deck, Pop, SECTIONS, statusText, type Actions, type T, type View } from './views'
+import { C, dur, gauge, limitLabel, slab, until, working, type Canvas } from './ink'
+import { Band, Deck, Pop, SECTIONS, type Actions, type T, type View } from './views'
 
 const EMPTY_METRICS: Metrics = {
   model: '',
@@ -23,7 +24,7 @@ const EMPTY_METRICS: Metrics = {
   startedAt: 0,
 }
 
-const IDLE: Live = { turnId: null, startedAt: 0, step: 0, chars: 0, rate: 0, running: [] }
+const IDLE: Live = { turnId: null, startedAt: 0, step: 0, chars: 0, tokens: 0, rate: 0, running: [] }
 
 const stMetrics = atom({ plugin: 'slab-deck', key: 'metrics' } as const, EMPTY_METRICS)
 const stTurns = atom({ plugin: 'slab-deck', key: 'turns' } as const, [])
@@ -62,13 +63,18 @@ let bandId: string | null = null
 let scan: { cancel: () => void } | null = null
 let tick: { cancel: () => void } | null = null
 let still = false
+let sparkDir: string | null = null
+let outDone = 0
+let stepChars = 0
+let deckW = 0
+let introDone = false
+const tweens = new Map<string, { cancel: () => void }>()
 let turn: TurnRec | null = null
-let liveWrite = 0
+let liveWrite = -Infinity
 let chars = 0
 let streamFrom = 0
 const running = new Map<string, string>()
 const above = new Set<string>()
-const last = new Map<string, string>()
 
 async function run($: EngineInterface, argv: string[], cwd?: string): Promise<string | null> {
   try {
@@ -104,22 +110,20 @@ async function tmux($: EngineInterface, argv: string[]): Promise<boolean> {
   return (await run($, ['tmux', ...argv])) !== null
 }
 
-/** True when `value` differs from what was last written under `key`: skips redraws for equal snapshots. */
-function changed(key: string, value: unknown): boolean {
-  const json = JSON.stringify(value)
-  if (last.get(key) === json) return false
-  last.set(key, json)
-  return true
+/** True when `next` differs from the stored value: equal snapshots cause no redraw. Compared with the
+ * state itself, not a module cache, so a /clear (which resets the session's state) refills it. */
+function differs(stored: unknown, next: unknown): boolean {
+  return JSON.stringify(stored) !== JSON.stringify(next)
 }
 
 async function refreshTmux($: EngineInterface): Promise<void> {
   const snap = await readTmux($)
-  if (changed('tmux', snap)) await update($, stTmuxSnap, () => snap)
+  if (differs(await read($, stTmuxSnap), snap)) await update($, stTmuxSnap, () => snap)
 }
 
 async function refreshGit($: EngineInterface): Promise<void> {
   const snap = await readGit($, await $.session.cwd())
-  if (changed('git', snap)) await update($, stGit, () => snap)
+  if (differs(await read($, stGit), snap)) await update($, stGit, () => snap)
 }
 
 async function refreshCtx($: EngineInterface): Promise<void> {
@@ -151,7 +155,7 @@ async function refreshAgents($: EngineInterface): Promise<void> {
     if (info.status === 'failed' || info.status === 'killed') return { ...a, status: 'failed' as const, durationMs: now - a.startedAt }
     return a
   })
-  if (changed('agents', next)) await update($, stAgents, () => next)
+  if (differs(list, next)) await update($, stAgents, () => next)
 }
 
 async function setLive($: EngineInterface, force: boolean): Promise<void> {
@@ -159,7 +163,7 @@ async function setLive($: EngineInterface, force: boolean): Promise<void> {
   if (!force && now - liveWrite < 250) return
   liveWrite = now
   const secs = Math.max(0.5, (now - streamFrom) / 1000)
-  await update($, stLive, l => ({ ...l, chars, rate: streamFrom > 0 ? chars / secs : 0, running: [...running.values()] }))
+  await update($, stLive, l => ({ ...l, chars, tokens: outDone + Math.round(stepChars / 4), rate: streamFrom > 0 ? chars / secs : 0, running: [...running.values()] }))
 }
 
 function startScan($: EngineInterface): void {
@@ -180,9 +184,35 @@ function stopScan(): void {
   tick = null
 }
 
-async function syncStatus($: EngineInterface): Promise<void> {
-  const mode = await read($, stBand)
-  $.ui.status(mode === 'off' ? statusText(await read($, stMetrics), await $.clock.now()) || undefined : undefined)
+/**
+ * Animates a deck gauge from one value to another by repainting its Raster (no redraw): 20 frames
+ * at 30 fps, easing out. The overview's context slab and limit gauges are keyed for it.
+ */
+async function glide($: EngineInterface, key: string, from: number, to: number): Promise<void> {
+  if (deckW <= 0 || (await read($, stSection)) !== 'overview' || !(await $.ui.panes()).some(p => p.id === DECK && p.isShown)) return
+  tweens.get(key)?.cancel()
+  const W = deckW
+  const paintAt = (p: number): Canvas => (key === 'ov-ctx' ? slab(W, 2, p, ` ${Math.round(p)}% `) : gauge(Math.max(6, W - 16), p))
+  let k = 0
+  const timer = $.clock.every(33, () => {
+    k += 1
+    const t = 1 - Math.pow(1 - Math.min(1, k / 20), 3)
+    const c = paintAt(from + (to - from) * t)
+    void $.ui.blit({ requestId: DECK, key, cells: c.cells(), columns: c.columns, rows: c.rows }).catch(() => undefined)
+    if (k >= 20) {
+      timer.cancel()
+      tweens.delete(key)
+    }
+  })
+  tweens.set(key, timer)
+}
+
+/** Hands the statusline script (statusline-slab.sh) the output-per-turn sparkline: mods have no render site in the status line slot. */
+async function writeSpark($: EngineInterface): Promise<void> {
+  if (sparkDir === null) return
+  const outs = (await read($, stTurns)).map(t => t.outTokens).slice(-24)
+  // The id is read at each write: a /clear gives the session a new one, and the statusline keys on it.
+  await $.fs.write(`${sparkDir}/${await $.session.id()}.json`, JSON.stringify({ outs })).catch(() => undefined)
 }
 
 async function peekPane($: EngineInterface, id: string): Promise<void> {
@@ -304,7 +334,7 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'deck', description: 'Open the slab-deck control center', argumentHint: SECTIONS.join('|') })
-    await $.command.register({ name: 'deck-band', description: 'Set the deck band above the prompt', argumentHint: 'full|compact|off' })
+    await $.command.register({ name: 'deck-band', description: 'Set the band above the prompt: full, compact (only while a turn runs) or off', argumentHint: 'full|compact|off' })
     const usage = await $.session.usage()
     const model = await $.session.model()
     await update($, stMetrics, m => ({
@@ -322,28 +352,41 @@ export const register: Register = on => {
     $.clock.every(8000, () => void refreshGit($))
     $.clock.every(5000, () => void refreshAgents($))
     $.clock.every(30000, () => $.ui.invalidate('ui.render'))
-    await syncStatus($)
+    const cache = (await $.env.get('XDG_CACHE_HOME')) ?? `${(await $.env.get('HOME')) ?? '/tmp'}/.cache`
+    if ((await run($, ['mkdir', '-p', `${cache}/slab-deck`])) !== null) sparkDir = `${cache}/slab-deck`
     return next(e)
   })
 
   on('session.measure', async ($, e, next) => {
     const pct = e.context.percent ?? null
+    const before = await read($, stMetrics)
+    // A /clear resets this session's state and raises no session.start: take the start time again.
+    const startedAt = before.startedAt > 0 ? before.startedAt : await $.session.usage().then(u => u.startedAt, () => 0)
     await update($, stMetrics, m => ({
       ...m,
+      startedAt,
       ctxPct: pct,
       ctxTokens: e.context.tokens ?? null,
       ctxWindow: e.context.window,
       limits: e.rateLimits.map(l => ({ kind: l.kind, pct: l.percentUsed, resetsAt: l.resetsAt ?? null })),
     }))
-    const watch: [string, number | null, string][] = [['ctx', pct, 'compact soon'], ...e.rateLimits.map(l => [l.kind, l.percentUsed, `resets ${l.resetsAt ? 'later' : 'soon'}`] as [string, number, string])]
-    for (const [k, v, hint] of watch) {
+    const now = await $.clock.now()
+    const watch: [string, string, number | null, string][] = [
+      ['ctx', 'ctx', pct, 'compact soon'],
+      ...e.rateLimits.map(l => [l.kind, limitLabel(l.kind), l.percentUsed, `resets in ${until(l.resetsAt ?? null, now)}`] as [string, string, number, string]),
+    ]
+    for (const [k, label, v, hint] of watch) {
       if (v === null) continue
       if (v >= 80 && !above.has(k)) {
         above.add(k)
-        $.ui.toast(`▲ ${k === 'ctx' ? 'ctx' : k.replace('_hour', 'h').replace('_day', 'd').replace('five', '5').replace('seven', '7')} ${Math.round(v)}% · ${hint}`, { timeoutMs: 6000 })
+        $.ui.toast(`! ${label} ${Math.round(v)}% · ${hint}`, { timeoutMs: 6000 })
       } else if (v < 70) above.delete(k)
     }
-    await syncStatus($)
+    if (pct !== null && before.ctxPct !== pct) void glide($, 'ov-ctx', before.ctxPct ?? 0, pct)
+    e.rateLimits.forEach((l, i) => {
+      const was = before.limits[i]?.pct ?? 0
+      if (Math.round(was) !== Math.round(l.percentUsed)) void glide($, `ov-lg${i}`, was, l.percentUsed)
+    })
     return next(e)
   })
 
@@ -351,9 +394,12 @@ export const register: Register = on => {
     const now = await $.clock.now()
     turn = { id: e.turnId, startedAt: now, durationMs: null, steps: 0, tools: 0, inTokens: 0, outTokens: 0, cacheRead: 0, cacheWrite: 0, isAborted: false }
     chars = 0
+    outDone = 0
+    stepChars = 0
     streamFrom = 0
+    liveWrite = -Infinity
     running.clear()
-    await update($, stLive, () => ({ turnId: e.turnId, startedAt: now, step: 0, chars: 0, rate: 0, running: [] }))
+    await update($, stLive, () => ({ turnId: e.turnId, startedAt: now, step: 0, chars: 0, tokens: 0, rate: 0, running: [] }))
     startScan($)
     return next(e)
   })
@@ -363,11 +409,13 @@ export const register: Register = on => {
     const effort = e.effort === undefined ? null : String(e.effort)
     await update($, stMetrics, m => (m.effort === effort && m.model === e.model ? m : { ...m, effort, model: e.model }))
     await update($, stLive, l => ({ ...l, step: e.index + 1 }))
+    stepChars = 0
     const stream = next(e)
     for await (const chunk of stream) {
       if (chunk.kind === 'text' || chunk.kind === 'thinking') {
         if (streamFrom === 0) streamFrom = await $.clock.now()
         chars += chunk.text.length
+        stepChars += chunk.text.length
         await setLive($, false)
       }
       yield chunk
@@ -377,12 +425,14 @@ export const register: Register = on => {
       turn.steps += 1
       const u = result.usage
       if (u) {
+        outDone += u.output_tokens
         turn.inTokens += u.input_tokens
         turn.outTokens += u.output_tokens
         turn.cacheRead += u.cache_read_input_tokens
         turn.cacheWrite += u.cache_creation_input_tokens
       }
     }
+    stepChars = 0
     await setLive($, true)
     return result
   })
@@ -423,6 +473,7 @@ export const register: Register = on => {
     if (turn !== null) {
       const done: TurnRec = { ...turn, durationMs: e.durationMs, isAborted: e.isAborted || e.reason === 'aborted' }
       await update($, stTurns, list => [...list, done].slice(-KEEP_TURNS))
+      await writeSpark($)
       if (e.durationMs > 180000) $.ui.toast(`turn took ${dur(e.durationMs)} · ${done.steps} steps · ${done.tools} tools`)
       turn = null
     }
@@ -448,7 +499,6 @@ export const register: Register = on => {
     const arg = e.args.trim() as BandMode
     if (!['full', 'compact', 'off'].includes(arg)) return { text: `deck band is ${await read($, stBand)}; /deck-band full|compact|off` }
     await update($, stBand, () => arg)
-    await syncStatus($)
     return { text: `deck band: ${arg}` }
   })
 
@@ -457,16 +507,28 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || e.props.view.agentId !== undefined) return next(e)
     const mode = await read($, stBand)
-    if (mode === 'off') return next(e)
+    const live = await read($, stLive)
+    const isWorking = live.turnId !== null
+    if (mode === 'off' || (mode === 'compact' && !isWorking)) return next(e)
     bandId = e.requestId
     const v = await view($, e, e.props.bodyColumns)
-    return Band(v, mode, e.props.isWorking, still)
+    return Band(v, isWorking, still)
   })
 
   on('ui.render', { component: 'Pane', requestId: DECK }, async ($, e) => {
     const v = await view($, e, e.props.bodyColumns)
     const [current, ctxSnap, peek, peekLines] = await Promise.all([read($, stSection), read($, stCtx), read($, stPeek), read($, stPeekLines)])
-    return Deck(v, current, { ctx: ctxSnap, peek, peekLines })
+    deckW = Math.max(20, e.props.bodyColumns) - 4
+    const intro = current === 'overview' && !introDone
+    if (intro) {
+      introDone = true
+      const m = v.m
+      $.clock.after(60, () => {
+        if (m.ctxPct !== null) void glide($, 'ov-ctx', 0, m.ctxPct)
+        m.limits.forEach((l, i) => void glide($, `ov-lg${i}`, 0, l.pct))
+      })
+    }
+    return Deck(v, current, { ctx: ctxSnap, peek, peekLines, rows: e.props.scroll.bodyRows, intro })
   })
 
   on('ui.render', { component: 'Pane', requestId: POP }, async ($, e) => {
@@ -478,11 +540,12 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     if (e.props.isWorking || e.props.isDraft || (await read($, stBand)) === 'off') return next(e)
-    return next({ ...e, props: { ...e.props, tail: '· ctrl+x tab: deck keys · /deck' } })
+    return next({ ...e, props: { ...e.props, tail: '^X ⇥ deck keys · /deck' } })
   })
 
   on('ui.close', async ($, e, next) => {
     if (e.id === POP) await update($, stPopup, () => null)
+    if (e.id === DECK) introDone = false
     return next(e)
   })
 }
