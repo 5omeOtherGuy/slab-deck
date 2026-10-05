@@ -5,5 +5,13 @@
   "types": "./types/index.d.ts",
   "author": {
     "name": "phaseonebig"
+  },
+  "userConfig": {
+    "providersCommand": {
+      "type": "string",
+      "title": "Providers command",
+      "description": "Command (argv, split on spaces, no shell) that prints the providers JSON document drawn by the deck's providers tab; see README",
+      "default": "provider-usage"
+    }
   }
 }

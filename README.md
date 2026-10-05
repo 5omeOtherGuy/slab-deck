@@ -32,6 +32,7 @@ tokens, tok/s and the tools running; when idle, your tmux windows as links (`1`â
 | git | changed files with diff bars, commits, history graph in a new tmux window |
 | tmux | all panes of the session: live peek, window minimap, go there, new window, split, zoom |
 | usage | rate limits, token totals, cache hit, turn durations |
+| providers | every subscription / provider account and model route you feed it: used, left, balance, resets (see below) |
 
 **Popups** for a tool call, a turn, a tmux pane and the key list (`esc` closes).
 
@@ -63,6 +64,36 @@ re-fits it after a resize and keeps its clock and countdowns current; one run ta
 
 tmux and git features turn on by themselves when Claude Code runs inside tmux or a git repository.
 `P1_REDUCED_MOTION=1` or `SLAB_REDUCED_MOTION=1` freezes the working indicator.
+
+## Providers tab
+
+The `providers` tab draws whatever your own command reports, so account names, keys and endpoints never live
+in this mod. It runs `providersCommand` (default `provider-usage` on `PATH`; argv split on spaces, no shell)
+when the tab opens and the last reading is over 2 minutes old, every 5 minutes, and on `r`. Set it in
+`~/.claude/settings.json`:
+
+```json
+"pluginConfigs": { "slab-deck": { "options": { "providersCommand": "/path/to/my-usage --json" } } }
+```
+
+The command prints one JSON document; unknown values are `null`, never 0:
+
+```ts
+{
+  ts: string, proxy: string,                        // when read; one free line of route/proxy state
+  accounts: { label, provider, source: string,
+              windows: { name: string, pct: number|null, resetsAt: string|null /* ISO */, resetsLocal: string|null,
+                         value: number|null, unit: string|null /* a balance */, status: string|null }[],
+              facts: [string, string][],             // plan, credits, extra usage â€¦
+              state: 'ok'|'stale'|'error'|'none', note: string|null, ageS: number|null }[],
+  routes:   { model: string, agents: string[],
+              pool: { route: string, account: string|null, state: 'ready'|'cold'|'skipped'|'unmetered'|'unread',
+                      usedPct: number|null, resetsAt: string|null, resetsLocal: string|null,
+                      balance: string|null, requests: number }[] }[]   // pool in failover order
+}
+```
+
+A failed read keeps the last snapshot on screen and names the error.
 
 ## Develop
 

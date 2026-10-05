@@ -92,6 +92,17 @@ export function until(iso: string | null, now: number): string {
   return h >= 24 ? `${Math.floor(h / 24)}d${h % 24}h` : dur(Math.max(0, t - now))
 }
 
+/** Time to a reset: `3d19h` from two days, else as `dur`; `passed` once it is behind. */
+export function resetIn(iso: string | null, now: number): string {
+  if (iso === null) return '—'
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return '—'
+  const ms = t - now
+  if (ms < 0) return 'passed'
+  const h = Math.floor(ms / 3600000)
+  return h >= 48 ? `${Math.floor(h / 24)}d${String(h % 24).padStart(2, '0')}h` : dur(ms)
+}
+
 export function clip(text: string, width: number): string {
   if (width <= 0) return ''
   return text.length <= width ? text : text.slice(0, Math.max(0, width - 1)) + '…'

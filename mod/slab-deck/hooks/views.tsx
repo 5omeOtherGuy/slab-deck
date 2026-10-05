@@ -2,8 +2,8 @@
 // the deck pane's sections (Pane: DIM titles, label DIM / value INK rows), the popups (Block bands).
 import type { Elements, RenderElement } from 'claude-code'
 
-import type { AgentRec, CtxSnap, GitSnap, Live, Metrics, Popup, TmuxSnap, ToolRec, TurnRec } from '../types'
-import { C, category, clip, columns, dur, gauge, grid, hex, lanes, levelHex, limitLabel, minimap, pad, slab, tokens, took, toolName, until, working, type Canvas } from './ink'
+import type { AgentRec, CtxSnap, GitSnap, Live, Metrics, Popup, ProvAccount, ProvPoolEntry, ProvSnap, ProvWindow, TmuxSnap, ToolRec, TurnRec } from '../types'
+import { C, category, clip, columns, dur, gauge, grid, hex, lanes, levelHex, limitLabel, minimap, pad, resetIn, slab, tokens, took, toolName, until, working, type Canvas } from './ink'
 
 export type T = Elements['terminal']
 
@@ -21,6 +21,7 @@ export type Actions = {
   zoomSelf: () => void
   refresh: () => void
   refreshCtx: () => void
+  refreshProviders: () => void
   gitLog: () => void
   copy: (text: string) => void
 }
@@ -40,7 +41,7 @@ export type View = {
   act: Actions
 }
 
-export const SECTIONS = ['overview', 'context', 'tools', 'agents', 'git', 'tmux', 'usage'] as const
+export const SECTIONS = ['overview', 'context', 'tools', 'agents', 'git', 'tmux', 'usage', 'providers'] as const
 
 export function modelName(id: string): string {
   if (!id) return '—'
@@ -134,7 +135,7 @@ function Hints(v: View): RenderElement {
 
 // ---- the deck pane
 
-type Extra = { ctx: CtxSnap | null; peek: string | null; peekLines: string[]; rows: number; intro: boolean }
+type Extra = { ctx: CtxSnap | null; peek: string | null; peekLines: string[]; rows: number; intro: boolean; providers: ProvSnap | null; providersCommand: string }
 
 export function Deck(v0: View, current: string, extra: Extra): RenderElement {
   const v = { ...v0, width: Math.max(20, v0.width - 4) }
@@ -146,6 +147,7 @@ export function Deck(v0: View, current: string, extra: Extra): RenderElement {
     : current === 'git' ? Git(v)
     : current === 'tmux' ? Tmux(v, extra.peek, extra.peekLines)
     : current === 'usage' ? Usage(v)
+    : current === 'providers' ? Providers(v, extra.providers, extra.providersCommand)
     : Overview(v, extra.intro)
   return (
     <Box flexDirection="column" width={v0.width} minHeight={extra.rows} backgroundColor={C.BLOCK} paddingX={2}>
@@ -543,6 +545,119 @@ function Usage(v: View): RenderElement {
           <Text color={C.DIM}>{dur(t.durationMs)}</Text>
         </Box>
       ))}
+    </Box>
+  )
+}
+
+// ---- providers: every subscription / provider account, then every model route and its pool
+
+const STATE_TONE: Record<ProvPoolEntry['state'], string> = { ready: C.OK, skipped: C.ATTN, cold: C.FAIL, unmetered: C.FAINT, unread: C.FAIL }
+
+/** A window's reset: `resets Thu 08 Oct 18:59 · in 3d02h` when wide, `in 3d02h` when not; its status first. */
+function windowTail(w: ProvWindow, now: number, isWide: boolean): string {
+  const left = resetIn(w.resetsAt, now)
+  const when = w.resetsAt === null ? 'no reset' : left === 'passed' ? 'reset passed' : isWide ? `resets ${w.resetsLocal ?? '—'} · in ${left}` : `in ${left}`
+  return w.status ? (isWide ? `${w.status} · ${when}` : w.status) : when
+}
+
+function ProvAccountRows(v: View, a: ProvAccount): RenderElement {
+  const { Box, Text } = v.T
+  const W = v.width
+  const isWide = W >= 110
+  const tailW = isWide ? 36 : 12
+  const gw = Math.max(6, W - 24 - 6 - 10 - tailW)
+  const status =
+    a.state === 'stale' ? [`stale ${dur((a.ageS ?? 0) * 1000)}${a.note ? ` · ${a.note}` : ''}`, C.ATTN]
+    : a.state === 'error' ? [`✗ ${a.note ?? 'no reading'}`, C.FAIL]
+    : a.state === 'none' ? [a.note ?? 'no usage endpoint', C.FAINT]
+    : [a.ageS !== null ? `cached ${dur(a.ageS * 1000)}` : '', C.FAINT]
+  return (
+    <Box key={`pa-${a.label}`} flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" justifyContent="space-between" width={W}>
+        <Text>
+          <Text color={C.INK}>{a.label}</Text>
+          <Text color={C.FAINT}>{`  ${clip(a.source, Math.max(0, W - a.label.length - 3 - Math.min(W, (status[0] ?? '').length, Math.floor(W * 0.55))))}`}</Text>
+        </Text>
+        <Text color={status[1]}>{clip(status[0] ?? '', Math.floor(W * 0.55))}</Text>
+      </Box>
+      {a.windows.map((w, i) =>
+        w.pct === null && w.value !== null ? (
+          Row(v, `pa-${a.label}-v${i}`, `  ${w.name}`, `${Number.isInteger(w.value) ? w.value : w.value.toFixed(2)} ${w.unit ?? ''}`.trim())
+        ) : w.pct !== null ? (
+          <Box key={`pa-${a.label}-w${i}`} flexDirection="row" width={W}>
+            <Text color={C.DIM}>{pad(`  ${clip(w.name, 21)}`, 24)}</Text>
+            {paint(v, `pa-${a.label}-g${i}`, gauge(gw, w.pct), bar(w.pct, Math.min(gw, 20)))}
+            <Text color={levelHex(w.pct)}>{` ${pad(`${Math.round(w.pct)}%`, 5)}`}</Text>
+            <Text color={C.INK}>{pad(`${Math.max(0, Math.round(100 - w.pct))}% left`, 10)}</Text>
+            <Text color={w.status ? C.FAIL : C.FAINT}>{clip(windowTail(w, v.now, isWide), tailW)}</Text>
+          </Box>
+        ) : null,
+      )}
+      {a.facts.map(([k, val], i) => Row(v, `pa-${a.label}-f${i}`, `  ${k}`, val))}
+    </Box>
+  )
+}
+
+function ProvPoolRow(v: View, model: string, p: ProvPoolEntry, isNext: boolean): RenderElement {
+  const { Box, Text } = v.T
+  const use =
+    p.usedPct !== null ? `${Math.max(0, Math.round(100 - p.usedPct))}% left · ${p.resetsAt ? resetIn(p.resetsAt, v.now) : 'no reset'}`
+    : p.balance !== null ? `balance ${p.balance}`
+    : '—'
+  return (
+    <Box key={`pr-${model}-${p.route}`} flexDirection="row" justifyContent="space-between" width={v.width}>
+      <Text>
+        <Text color={isNext ? C.LIVE : C.BLOCK}>{isNext ? '  › ' : '    '}</Text>
+        <Text color={C.REF}>{pad(p.route === p.account || p.account === null ? p.route : `${p.route} (${p.account})`, 21)}</Text>
+        <Text color={STATE_TONE[p.state]}>{pad(p.state, 10)}</Text>
+        <Text color={p.usedPct !== null ? levelHex(p.usedPct) : C.INK}>{clip(use, Math.max(10, v.width - 45))}</Text>
+      </Text>
+      <Text color={C.FAINT}>{`${p.requests} req`}</Text>
+    </Box>
+  )
+}
+
+function Providers(v: View, snap: ProvSnap | null, command: string): RenderElement {
+  const { Box, Text, Button } = v.T
+  if (snap === null)
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={C.FAINT}>{clip(`reading every provider account through \`${command}\` …`, v.width)}</Text>
+        <Button key="pv-r0" plain hotkey="r" label="refresh" dimColor onPress={() => v.act.refreshProviders()} />
+      </Box>
+    )
+  const pctWins = snap.accounts.flatMap(a => a.windows.filter(w => w.pct !== null && resetIn(w.resetsAt, v.now) !== 'passed').map(w => ({ a, w })))
+  const tight = pctWins.filter(x => (x.w.pct ?? 0) >= 90)
+  return (
+    <Box flexDirection="column">
+      {Section(v, `providers · ${snap.accounts.length} accounts · ${snap.routes.length} routes`, `read ${dur(v.now - snap.takenAt)} ago`)}
+      {snap.error !== null && <Text color={C.FAIL}>{clip(`✗ last read failed, showing the one before: ${snap.error}`, v.width)}</Text>}
+      <Text color={C.FAINT}>{clip(snap.proxy, v.width)}</Text>
+      {tight.length > 0 && (
+        <Text>
+          <Text color={C.ATTN}>▲ </Text>
+          <Text color={C.INK}>{tight.map(x => `${x.a.label} ${x.w.name} ${Math.round(x.w.pct ?? 0)}%`).join(' · ')}</Text>
+        </Text>
+      )}
+      {Section(v, 'routes', 'left · resets in · › serves next')}
+      {snap.routes.map(r => {
+        const next = r.pool.find(p => p.state === 'ready' || p.state === 'unmetered')
+        return (
+          <Box key={`pr-${r.model}`} flexDirection="column">
+            <Text>
+              <Text color={C.INK}>{r.model}</Text>
+              <Text color={C.FAINT}>{r.agents.length > 0 ? `  ${clip(r.agents.join(' '), Math.max(10, v.width - r.model.length - 2))}` : ''}</Text>
+            </Text>
+            {r.pool.map(p => ProvPoolRow(v, r.model, p, p === next))}
+          </Box>
+        )
+      })}
+      {Section(v, 'accounts', 'used · left · reset (local time)')}
+      {snap.accounts.map(a => ProvAccountRows(v, a))}
+      <Box flexDirection="row" gap={2} marginTop={1}>
+        <Button key="pv-r" plain hotkey="r" label="refresh" dimColor onPress={() => v.act.refreshProviders()} />
+        <Text color={C.FAINT}>reads every 5 min · balances in the provider's own unit</Text>
+      </Box>
     </Box>
   )
 }
