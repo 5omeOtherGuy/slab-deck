@@ -9,7 +9,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
-import type { AgentRec, BandMode, CtxSnap, GitSnap, Live, Metrics, Popup, TmuxSnap, ToolRec, TurnRec } from '../types'
+import type { AgentRec, BandMode, CtxSnap, GitSnap, Live, Metrics, Popup, ProvSnap, TmuxSnap, ToolRec, TurnRec } from '../types'
 import { GIT_LOG, GIT_NUMSTAT, GIT_STATUS, PANE_FORMAT, lastLines, parseGit, parseTmux } from './data'
 import { C, dur, gauge, limitLabel, slab, until, working, type Canvas } from './ink'
 import { Band, Deck, Pop, SECTIONS, type Actions, type T, type View } from './views'
@@ -34,6 +34,7 @@ const stAgents = atom({ plugin: 'slab-deck', key: 'agents' } as const, [])
 const stGit = atom({ plugin: 'slab-deck', key: 'git' } as const, null)
 const stTmuxSnap = atom({ plugin: 'slab-deck', key: 'tmux' } as const, null)
 const stCtx = atom({ plugin: 'slab-deck', key: 'ctx' } as const, null)
+const stProviders = atom({ plugin: 'slab-deck', key: 'providers' } as const, null)
 const stSection = atom({ plugin: 'slab-deck', key: 'section' } as const, 'overview')
 const stBand = atom({ plugin: 'slab-deck', key: 'band' } as const, 'full' as BandMode)
 const stPopup = atom({ plugin: 'slab-deck', key: 'popup' } as const, null)
@@ -44,6 +45,9 @@ const DECK = 'deck'
 const POP = 'deck-pop'
 const KEEP_TOOLS = 300
 const KEEP_TURNS = 120
+// The providers tab: read every 5 minutes, and on opening the tab when older than 2.
+const PROV_EVERY = 300000
+const PROV_FRESH = 120000
 
 function summarize(e: Record<string, unknown>): string {
   const pick = (k: string) => (typeof e[k] === 'string' ? (e[k] as string) : undefined)
@@ -63,6 +67,8 @@ let bandId: string | null = null
 let scan: { cancel: () => void } | null = null
 let tick: { cancel: () => void } | null = null
 let still = false
+let provBusy = false
+let provCommand = 'provider-usage'
 let sparkDir: string | null = null
 let outDone = 0
 let stepChars = 0
@@ -140,6 +146,26 @@ async function refreshCtx($: EngineInterface): Promise<void> {
     takenAt: await $.clock.now(),
   }
   await update($, stCtx, () => snap)
+}
+
+/** Runs the providers command (argv, no shell); a failed read keeps the last snapshot and says why. */
+async function refreshProviders($: EngineInterface): Promise<void> {
+  if (provBusy) return
+  provBusy = true
+  const fail = (why: string) => update($, stProviders, p => (p === null ? null : { ...p, error: why }))
+  try {
+    const argv = provCommand.trim().split(/\s+/).filter(Boolean)
+    if (argv.length === 0) return
+    const r = await $.process.run(argv, { timeoutMs: 60000 })
+    if (r.exitCode !== 0) return void (await fail(`${provCommand}: ${r.stderr.trim().split('\n').at(-1) || `exit ${r.exitCode}`}`))
+    const doc = JSON.parse(r.stdout) as Omit<ProvSnap, 'takenAt' | 'error'>
+    const now = await $.clock.now()
+    await update($, stProviders, () => ({ ...doc, takenAt: now, error: null }))
+  } catch (err) {
+    await fail(`${provCommand}: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    provBusy = false
+  }
 }
 
 async function refreshAgents($: EngineInterface): Promise<void> {
@@ -229,6 +255,10 @@ async function showSection($: EngineInterface, s: string): Promise<void> {
     const snap = await read($, stCtx)
     if (snap === null || (await $.clock.now()) - snap.takenAt > 60000) await refreshCtx($).catch(() => $.ui.toast('context: the window could not be counted'))
   }
+  if (s === 'providers') {
+    const p = await read($, stProviders)
+    if (p === null || (await $.clock.now()) - p.takenAt > PROV_FRESH) void refreshProviders($)
+  }
   if (s === 'tmux') {
     const t = await read($, stTmuxSnap)
     const target = (await read($, stPeek)) ?? t?.self ?? null
@@ -289,6 +319,7 @@ function actions($: EngineInterface, surface: RenderSurface): Actions {
       })()
     },
     refresh: () => void Promise.all([refreshGit($), refreshTmux($), refreshAgents($)]),
+    refreshProviders: () => void refreshProviders($),
     refreshCtx: () => void refreshCtx($).catch(() => $.ui.toast('context: the breakdown could not be counted')),
     gitLog: () => {
       void (async () => {
@@ -329,7 +360,9 @@ async function view($: EngineInterface, e: { surface: RenderSurface }, width: nu
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  if (typeof options.providersCommand === 'string') provCommand = options.providersCommand
+
   // ---- lifecycle
 
   on('session.start', async ($, e, next) => {
@@ -352,6 +385,8 @@ export const register: Register = on => {
     $.clock.every(8000, () => void refreshGit($))
     $.clock.every(5000, () => void refreshAgents($))
     $.clock.every(30000, () => $.ui.invalidate('ui.render'))
+    $.clock.every(PROV_EVERY, () => void refreshProviders($))
+    void refreshProviders($)
     const cache = (await $.env.get('XDG_CACHE_HOME')) ?? `${(await $.env.get('HOME')) ?? '/tmp'}/.cache`
     if ((await run($, ['mkdir', '-p', `${cache}/slab-deck`])) !== null) sparkDir = `${cache}/slab-deck`
     return next(e)
@@ -517,7 +552,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: DECK }, async ($, e) => {
     const v = await view($, e, e.props.bodyColumns)
-    const [current, ctxSnap, peek, peekLines] = await Promise.all([read($, stSection), read($, stCtx), read($, stPeek), read($, stPeekLines)])
+    const [current, ctxSnap, peek, peekLines, providers] = await Promise.all([read($, stSection), read($, stCtx), read($, stPeek), read($, stPeekLines), read($, stProviders)])
     deckW = Math.max(20, e.props.bodyColumns) - 4
     const intro = current === 'overview' && !introDone
     if (intro) {
@@ -528,7 +563,7 @@ export const register: Register = on => {
         m.limits.forEach((l, i) => void glide($, `ov-lg${i}`, 0, l.pct))
       })
     }
-    return Deck(v, current, { ctx: ctxSnap, peek, peekLines, rows: e.props.scroll.bodyRows, intro })
+    return Deck(v, current, { ctx: ctxSnap, peek, peekLines, rows: e.props.scroll.bodyRows, intro, providers, providersCommand: provCommand })
   })
 
   on('ui.render', { component: 'Pane', requestId: POP }, async ($, e) => {

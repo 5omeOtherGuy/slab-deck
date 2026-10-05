@@ -127,7 +127,7 @@ test('no drawing holds a box-drawing character (SLAB Harness: none, ever)', asyn
   await band.unmount()
   const deck = await $.ui.mount({ plugin: 'slab-deck', surface: 'terminal', ...PANE('deck') })
   await deck.press({ key: 'ov-refresh' })
-  for (const s of ['tools', 'agents', 'git', 'tmux', 'usage', 'overview']) {
+  for (const s of ['tools', 'agents', 'git', 'tmux', 'usage', 'providers', 'overview']) {
     await deck.press({ key: `t-${s}` })
     expect(box.test(JSON.stringify(await deck.drawn()))).toBe(false)
   }
@@ -173,5 +173,50 @@ test('a turn streams into the hint row and lands in usage', async ($, on) => {
   await deck.press({ key: 't-usage' })
   expect(await deck.find({ type: 'Text', text: '3.4k' })).toBeDefined()
   expect(await deck.find({ type: 'Button', text: /1 steps/ })).toBeDefined()
+  await deck.unmount()
+})
+
+const PROVIDERS = {
+  ts: '2030-01-01T00:00:00Z',
+  proxy: 'proxy up 1h',
+  accounts: [
+    { label: 'plan-a', provider: 'example', source: '~/.config/example', windows: [{ name: 'weekly', pct: 92, resetsAt: '2030-01-03T00:00:00Z', resetsLocal: 'Thu 03 Jan 00:00', value: null, unit: null, status: null }], facts: [['plan', 'pro']], state: 'ok', note: null, ageS: null },
+    { label: 'pass-b', provider: 'example', source: '', windows: [{ name: 'balance', pct: null, resetsAt: null, resetsLocal: null, value: 1200, unit: 'credits', status: null }], facts: [], state: 'ok', note: null, ageS: null },
+    { label: 'free-c', provider: 'example', source: '', windows: [], facts: [], state: 'none', note: 'no usage endpoint', ageS: null },
+  ],
+  routes: [
+    {
+      model: 'model-x',
+      agents: ['x'],
+      pool: [
+        { route: 'plan-a', account: 'plan-a', state: 'skipped', usedPct: 92, resetsAt: '2030-01-03T00:00:00Z', resetsLocal: 'Thu 03 Jan 00:00', balance: null, requests: 0 },
+        { route: 'pass-b', account: 'pass-b', state: 'ready', usedPct: null, resetsAt: null, resetsLocal: null, balance: '1200 credits', requests: 3 },
+      ],
+    },
+  ],
+}
+
+test('the providers tab runs its command and draws accounts, balances and routes', { options: { providersCommand: 'my-usage --json' } }, async ($, on) => {
+  engine(on)
+  const calls: string[] = []
+  let fail = false
+  on('process.run', ($, e) => {
+    calls.push(e.argv.join(' '))
+    const ok = e.argv[0] === 'my-usage' && !fail
+    return { value: { exitCode: ok ? 0 : 1, stdout: ok ? JSON.stringify(PROVIDERS) : '', stderr: ok ? '' : 'boom', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const deck = await $.ui.mount({ plugin: 'slab-deck', surface: 'terminal', ...PANE('deck') })
+  await deck.press({ key: 't-providers' })
+  expect(calls).toContain('my-usage --json')
+  expect(await deck.find({ type: 'Text', text: /8% left · 2d00h|8% left/ })).toBeDefined()
+  expect(await deck.find({ type: 'Text', text: /balance 1200 credits/ })).toBeDefined()
+  expect(await deck.find({ type: 'Text', text: /plan-a weekly 92%/ })).toBeDefined()
+  expect(await deck.find({ type: 'Text', text: /no usage endpoint/ })).toBeDefined()
+  expect(await deck.find({ type: 'Text', text: '  › ' })).toBeDefined()
+
+  fail = true
+  await deck.press({ key: 'pv-r' })
+  expect(await deck.find({ type: 'Text', text: /last read failed.*boom/ })).toBeDefined()
+  expect(await deck.find({ type: 'Text', text: /8% left · 2d00h|8% left/ })).toBeDefined()
   await deck.unmount()
 })

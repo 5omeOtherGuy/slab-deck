@@ -104,6 +104,51 @@ export type CtxSnap = {
   takenAt: number
 }
 
+/** One usage window: a percent with its reset, or a balance value in the provider's unit. */
+export type ProvWindow = {
+  name: string
+  pct: number | null
+  resetsAt: string | null
+  resetsLocal: string | null
+  value: number | null
+  unit: string | null
+  status: string | null
+}
+
+export type ProvAccount = {
+  label: string
+  provider: string
+  source: string
+  windows: ProvWindow[]
+  facts: [string, string][]
+  state: 'ok' | 'stale' | 'error' | 'none'
+  note: string | null
+  ageS: number | null
+}
+
+export type ProvPoolEntry = {
+  route: string
+  account: string | null
+  state: 'ready' | 'cold' | 'skipped' | 'unmetered' | 'unread'
+  usedPct: number | null
+  resetsAt: string | null
+  resetsLocal: string | null
+  balance: string | null
+  requests: number
+}
+
+export type ProvRoute = { model: string; agents: string[]; pool: ProvPoolEntry[] }
+
+/** bin/provider_usage.py's document, plus when the deck read it and why it could not. */
+export type ProvSnap = {
+  ts: string
+  accounts: ProvAccount[]
+  routes: ProvRoute[]
+  proxy: string
+  takenAt: number
+  error: string | null
+}
+
 export type Popup =
   | { kind: 'tool'; id: string }
   | { kind: 'pane'; id: string; lines: string[] }
@@ -123,6 +168,7 @@ declare module 'claude-code' {
       git: GitSnap | null
       tmux: TmuxSnap | null
       ctx: CtxSnap | null
+      providers: ProvSnap | null
       section: string
       band: BandMode
       popup: Popup | null
