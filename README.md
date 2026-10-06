@@ -62,6 +62,19 @@ For every session, in `~/.claude/settings.json`:
 The statusline needs `jq` and `git`, and works without the mod (no sparkline then). `refreshInterval`
 re-fits it after a resize and keeps its clock and countdowns current; one run takes about 60 ms.
 
+**Pinned quota windows.** Claude Code reports the 7d window of the signed-in account only. To watch several
+accounts at once, pin their windows; the pins replace the 7d gauge and never drop when the line narrows:
+
+```json
+"statusLine": { "type": "command", "command": "SLAB_QUOTA_COMMAND=provider-usage SLAB_QUOTA_PINS='work:weekly_all:w home:weekly_all:h' /path/to/slab-deck/statusline-slab.sh", "padding": 0, "refreshInterval": 2 }
+```
+
+`SLAB_QUOTA_PINS` lists `account:window[:short]`, matched against the `label` and window `name` of the command's
+JSON, which has the providers-tab shape below. The command is slow, so the line reads a cache
+(`${XDG_CACHE_HOME:-~/.cache}/slab-deck/quota.json`, mode 0600) and refreshes it in the background, one
+refresher at a time, once it is `SLAB_QUOTA_MAX_AGE` seconds old (default 300). Output that is not that shape
+leaves the last reading in place; a reading over three periods old is marked `?`.
+
 tmux and git features turn on by themselves when Claude Code runs inside tmux or a git repository.
 `P1_REDUCED_MOTION=1` or `SLAB_REDUCED_MOTION=1` freezes the working indicator.
 
