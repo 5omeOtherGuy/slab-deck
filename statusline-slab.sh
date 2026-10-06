@@ -111,7 +111,43 @@ limit() { # label pct resets_at
   right "$txt" "$w" $(( p >= 70 ? 1 : 2 ))
 }
 [ -n "$five" ] && limit 5h "$five" "$fiveAt"
-[ -n "$seven" ] && limit 7d "$seven" "$sevenAt"
+
+# ---- pinned quota windows (SLAB_QUOTA_PINS="account:window[:short] …") from SLAB_QUOTA_COMMAND, whose JSON has the
+# providers-tab shape ({accounts:[{label, windows:[{name, pct, resetsAt}]}]}). The command is slow (network), so the
+# line reads a shared cache and refreshes it in the background, one refresher at a time, once it is
+# SLAB_QUOTA_MAX_AGE seconds old (default 300). The pins replace the session's own 7d gauge, which covers one
+# account only; they never drop when the line narrows.
+pinned=0
+if [ -n "$SLAB_QUOTA_PINS" ] && [ -n "$SLAB_QUOTA_COMMAND" ]; then
+  qdir="${XDG_CACHE_HOME:-$HOME/.cache}/slab-deck"; qfile="$qdir/quota.json"
+  qage=999999
+  [ -r "$qfile" ] && qage=$(( now - $(stat -c %Y "$qfile" 2>/dev/null || echo 0) ))
+  if (( qage > ${SLAB_QUOTA_MAX_AGE:-300} )); then
+    mkdir -p "$qdir"
+    read -r -a qcmd <<<"$SLAB_QUOTA_COMMAND"   # argv split on spaces, no shell, as the deck's providersCommand
+    ( umask 077; flock -n 9 || exit 0
+      "${qcmd[@]}" >"$qfile.tmp" 2>/dev/null && jq -e .accounts "$qfile.tmp" >/dev/null 2>&1 && mv -f "$qfile.tmp" "$qfile"
+      rm -f "$qfile.tmp" ) 9>"$qdir/quota.lock" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null
+  fi
+  if [ -r "$qfile" ]; then
+    while IFS=$US read -r qshort qpct qat; do
+      [ -z "$qpct" ] && continue
+      pinned=1
+      limit "$qshort" "$qpct" "$qat"
+      RP[${#RP[@]}-1]=0
+      # A reading over three refresh periods old is shown, marked stale, never passed off as current.
+      if (( qage > 3 * ${SLAB_QUOTA_MAX_AGE:-300} )); then RT[${#RT[@]}-1]+="$FFAINT ?"; RW[${#RW[@]}-1]=$(( RW[${#RW[@]}-1] + 2 )); fi
+    done < <(jq -r --arg pins "$SLAB_QUOTA_PINS" '
+      . as $d | $pins | split(" ")[] | select(length > 0) | split(":") as $p
+      | ($d.accounts[]? | select(.label == $p[0]) | .windows[]? | select(.name == $p[1])) as $w
+      | [ ($p[2] // $p[0]),
+          ($w.pct // "" | tostring),
+          ($w.resetsAt // "" | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | (try fromdateiso8601 catch "") | tostring) ]
+      | join("\u001f")' "$qfile" 2>/dev/null)
+  fi
+fi
+(( pinned )) || { [ -n "$seven" ] && limit 7d "$seven" "$sevenAt"; }
 
 if [ "$warm" = "false" ]; then
   right "${FATTN}! ${FDIM}cache cold" 12 5
