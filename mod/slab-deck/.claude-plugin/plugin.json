@@ -1,10 +1,10 @@
 {
   "name": "slab-deck",
   "version": "0.1.0",
-  "description": "SLAB/SIGNAL control center for Claude Code: live deck band, control pane, popups and tmux navigation",
+  "description": "Control center for Claude Code in the SLAB design language: live deck band, control pane, popups and tmux navigation",
   "types": "./types/index.d.ts",
   "author": {
-    "name": "phaseonebig"
+    "name": "5omeOtherGuy"
   },
   "userConfig": {
     "providersCommand": {

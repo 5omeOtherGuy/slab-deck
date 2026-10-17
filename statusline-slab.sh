@@ -11,7 +11,7 @@
 # Cheap enough to re-run every second (statusLine.refreshInterval): no subshell per colour.
 #
 # Install, in ~/.claude/settings.json:
-#   "statusLine": { "type": "command", "command": "/path/to/slab-deck/statusline-slab.sh", "padding": 0, "refreshInterval": 1 }
+#   "statusLine": { "type": "command", "command": "/path/to/slab-deck/statusline-slab.sh", "padding": 0, "refreshInterval": 2 }
 # Needs jq and git. SLAB_STATUSLINE_CAPTURE=<file> dumps the input JSON.
 
 export LC_ALL=C.UTF-8
