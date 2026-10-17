@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Orb setup, idempotent: the gate's tools and locked dependencies, the git hooks, and which credentials are present.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+missing=()
+for c in jq shellcheck; do command -v "$c" >/dev/null || missing+=("$c"); done
+if (( ${#missing[@]} )); then sudo apt-get update -qq && sudo apt-get install -y -qq "${missing[@]}" >/dev/null; fi
+npm ci --no-fund --no-audit --loglevel=error
+git config core.hooksPath .githooks
+# The gate needs none of these; they matter only for opt-in live use of the mod. Presence only, never values.
+for v in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY GH_TOKEN; do
+  if [ -n "${!v:-}" ]; then echo "$v: present"; else echo "$v: absent"; fi
+done
