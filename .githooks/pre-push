@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the gate before every push. Enable once per checkout: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/gate"

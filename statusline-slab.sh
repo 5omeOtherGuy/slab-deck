@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034,SC2153 # colour tokens are read through ${!n}; their escapes are set by printf -v
 # slab-deck statusline — Claude Code's status line slot in the SLAB Harness Statusline grammar:
 #
 #    Opus 5.5    slab-deck main   effort high        ctx ████▌░░░░░ 35%   5h ██░░░░ 26%   7d █████▋ 94% 3d16h   cache 99%   ▁▃▅█   46m   +2592 −570
