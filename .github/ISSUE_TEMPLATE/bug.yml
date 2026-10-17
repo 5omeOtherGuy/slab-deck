@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in the statusline or the mod does not work as described.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: slab-deck version
+      description: The commit you run (`git -C /path/to/slab-deck rev-parse --short HEAD`), or a tag.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Claude Code version (`claude --version`), OS, terminal, bash version, and whether you run inside tmux.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The settings involved (without secrets) and what you did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: What happened instead; a screenshot helps for anything drawn.
+    validations:
+      required: true
