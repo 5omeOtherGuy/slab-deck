@@ -121,11 +121,21 @@ pinned=0
 if [ -n "$SLAB_QUOTA_PINS" ] && [ -n "$SLAB_QUOTA_COMMAND" ]; then
   qdir="${XDG_CACHE_HOME:-$HOME/.cache}/slab-deck"; qfile="$qdir/quota.json"
   qage=999999
-  [ -r "$qfile" ] && qage=$(( now - $(stat -c %Y "$qfile" 2>/dev/null || echo 0) ))
+  # mtime: GNU stat (Linux) first, BSD stat (macOS) only when that fails; still one subshell per run
+  [ -r "$qfile" ] && qage=$(( now - $(stat -c %Y "$qfile" 2>/dev/null || stat -f %m "$qfile" 2>/dev/null || echo 0) ))
   if (( qage > ${SLAB_QUOTA_MAX_AGE:-300} )); then
     mkdir -p "$qdir"
     read -r -a qcmd <<<"$SLAB_QUOTA_COMMAND"   # argv split on spaces, no shell, as the deck's providersCommand
-    ( umask 077; flock -n 9 || exit 0
+    ( umask 077
+      if command -v flock >/dev/null; then flock -n 9 || exit 0
+      else # no flock(1), as on macOS: an atomic mkdir is the lock; one left by a killed refresher expires after 10 min
+        qlock="$qdir/quota.lock.d"
+        if ! mkdir "$qlock" 2>/dev/null; then
+          (( now - $(stat -c %Y "$qlock" 2>/dev/null || stat -f %m "$qlock" 2>/dev/null || echo 0) > 600 )) || exit 0
+          rmdir "$qlock" 2>/dev/null; mkdir "$qlock" 2>/dev/null || exit 0
+        fi
+        trap 'rmdir "$qlock" 2>/dev/null' EXIT
+      fi
       "${qcmd[@]}" >"$qfile.tmp" 2>/dev/null && jq -e .accounts "$qfile.tmp" >/dev/null 2>&1 && mv -f "$qfile.tmp" "$qfile"
       rm -f "$qfile.tmp" ) 9>"$qdir/quota.lock" </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null
