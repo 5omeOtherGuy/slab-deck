@@ -10,9 +10,8 @@ for c in jq shellcheck git; do
   command -v "$c" >/dev/null || { echo "gate: $c not found; install it (orbs: .agents/setup)"; exit 1; }
 done
 if [ ! -x "$bin/claude" ] || [ ! -x "$bin/secretlint" ]; then echo 'gate: locked tools missing; run npm ci'; exit 1; fi
-tmp=$(mktemp -d)
+if ! tmp=$(mktemp -d) || ! mkdir "$tmp/home"; then echo 'gate: cannot create a temporary directory'; exit 1; fi
 trap 'rm -rf "$tmp"' EXIT
-mkdir "$tmp/home"
 failed=0
 
 step() { # name command…
@@ -21,7 +20,7 @@ step() { # name command…
 }
 # Claude Code from the lockfile, with no credentials and a throwaway HOME: never the real ~/.claude, never a model call.
 cc() { env -i PATH="$bin:$PATH" HOME="$tmp/home" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude "$@"; }
-secrets() { git ls-files -z --cached --others --exclude-standard | xargs -0 "$bin/secretlint" --maskSecrets; }
+secrets() { git ls-files -z --cached --others --exclude-standard | xargs -0 "$bin/secretlint" --maskSecrets --; }
 
 step shellcheck shellcheck statusline-slab.sh scripts/gate tests/statusline.sh .githooks/pre-push .agents/setup
 step 'plugin validate' cc plugin validate --strict mod/slab-deck
