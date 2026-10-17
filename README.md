@@ -1,12 +1,19 @@
 # slab-deck
 
+Claude Code control center mod: live statusline band, deck pane, popups and tmux navigation in the SLAB design language.
+
+Status: pre-release. You can try it; nothing is promised yet, and there is no tagged version to pin.
+
+[![gate](https://github.com/5omeOtherGuy/slab-deck/actions/workflows/gate.yml/badge.svg?branch=main)](https://github.com/5omeOtherGuy/slab-deck/actions/workflows/gate.yml)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 A control center for [Claude Code](https://claude.com/claude-code) in the SLAB design language: dark
 surfaces, hue only on glyphs and outcome markers (`› ▸ ✓ ✗ ! · ↳ ▪`), no box drawing.
 Two parts that work together:
 
 - `statusline-slab.sh` fills Claude Code's own status line slot with gauges in true colour.
-- `mod/slab-deck` is a mod on the function-hooks plugin API (Claude Code 2.1.289+): a live band above
-  the prompt, a docked deck pane, popups and tmux navigation.
+- `mod/slab-deck` is a mod on the function-hooks plugin API: a live band above the prompt, a docked deck
+  pane, popups and tmux navigation.
 
 ![slab-deck while a turn runs](docs/working.png)
 
@@ -47,9 +54,10 @@ The tmux actions only select, open or split; nothing closes, kills or types into
 
 ## Install
 
+Needs Claude Code 2.1.289 or later, and for the statusline bash 4.2+, `jq` and `git` (see Compatibility).
+
 ```sh
 git clone https://github.com/5omeOtherGuy/slab-deck
-claude --plugin-dir slab-deck/mod/slab-deck
 ```
 
 For every session, in `~/.claude/settings.json`:
@@ -59,10 +67,28 @@ For every session, in `~/.claude/settings.json`:
 "statusLine": { "type": "command", "command": "/path/to/slab-deck/statusline-slab.sh", "padding": 0, "refreshInterval": 2 }
 ```
 
-The statusline needs `jq` and `git`, and works without the mod (no sparkline then). `refreshInterval`
-re-fits it after a resize and keeps its clock and countdowns current; one run takes about 60 ms.
+The statusline works without the mod (no sparkline then). `refreshInterval` re-fits it after a resize and
+keeps its clock and countdowns current; one run takes about 60 ms.
 
-**Pinned quota windows.** Claude Code reports the 7d window of the signed-in account only. To watch several
+## Usage
+
+Try the mod for one session without changing your settings:
+
+```sh
+claude --plugin-dir slab-deck/mod/slab-deck
+```
+
+Then `/deck` opens the deck pane (`/deck usage` opens one section), `/deck-band full|compact|off` sets the
+band, and `h` in the band lists the keys.
+
+## Configuration
+
+tmux and git features turn on by themselves when Claude Code runs inside tmux or a git repository.
+`P1_REDUCED_MOTION=1` or `SLAB_REDUCED_MOTION=1` freezes the working indicator.
+
+### Pinned quota windows
+
+Claude Code reports the 7d window of the signed-in account only. To watch several
 accounts at once, pin their windows; the pins replace the 7d gauge and never drop when the line narrows:
 
 ```json
@@ -75,10 +101,7 @@ JSON, which has the providers-tab shape below. The command is slow, so the line 
 refresher at a time, once it is `SLAB_QUOTA_MAX_AGE` seconds old (default 300). Output that is not that shape
 leaves the last reading in place; a reading over three periods old is marked `?`.
 
-tmux and git features turn on by themselves when Claude Code runs inside tmux or a git repository.
-`P1_REDUCED_MOTION=1` or `SLAB_REDUCED_MOTION=1` freezes the working indicator.
-
-## Providers tab
+### Providers tab
 
 The `providers` tab draws whatever your own command reports, so account names, keys and endpoints never live
 in this mod. It runs `providersCommand` (default `provider-usage` on `PATH`; argv split on spaces, no shell)
@@ -108,21 +131,52 @@ The command prints one JSON document; unknown values are `null`, never 0:
 
 A failed read keeps the last snapshot on screen and names the error.
 
-## Develop
+## Compatibility
+
+| part | needs | last verified |
+| --- | --- | --- |
+| mod | Claude Code 2.1.289 or later (function-hooks plugin API) | 2.1.302: `claude plugin validate` and `claude plugin test`, 2026-10-17 |
+| statusline | bash 4.2 or later, `jq`, `git`; `tmux` optional | Linux, bash 5.2, 2026-10-17 |
+| pinned quotas | as the statusline; uses `flock` when present, else a lock directory | Linux; the macOS path (BSD `stat`, no `flock`) only simulated on Linux, 2026-10-17 |
+
+macOS ships bash 3.2, which the statusline cannot run (it needs `printf '%(%s)T'`); install a newer bash,
+for example with Homebrew, so that `/usr/bin/env bash` finds it.
+
+## Development
+
+The gate runs everything a change must pass: shellcheck, plugin validation, the mod's tests, the statusline
+tests and a secret scan. It needs Node.js, `jq` and `shellcheck`; the Claude Code it tests against comes from
+`package-lock.json`.
 
 ```sh
-claude plugin validate mod/slab-deck
-claude plugin test mod/slab-deck
+npm ci
+scripts/gate
 ```
+
+Focused runs:
+
+```sh
+node_modules/.bin/claude plugin test mod/slab-deck
+tests/statusline.sh
+```
+
+`git config core.hooksPath .githooks` makes every push run the gate first. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 | file | role |
 | --- | --- |
-| `hooks/register.tsx` | events, timers, commands, every `$` call (the engine follows `$` only within one file) |
-| `hooks/views.tsx` | band, deck sections and popups |
-| `hooks/ink.ts` | design tokens and the Raster painters (gauges, charts, minimap, working indicator) |
-| `hooks/data.ts` | git and tmux output parsers |
-| `types/index.d.ts` | the `$.state` contract |
+| `statusline-slab.sh` | the statusline |
+| `mod/slab-deck/hooks/register.tsx` | events, timers, commands, every `$` call (the engine follows `$` only within one file) |
+| `mod/slab-deck/hooks/views.tsx` | band, deck sections and popups |
+| `mod/slab-deck/hooks/ink.ts` | design tokens and the Raster painters (gauges, charts, minimap, working indicator) |
+| `mod/slab-deck/hooks/data.ts` | git and tmux output parsers |
+| `mod/slab-deck/types/index.d.ts` | the `$.state` contract |
 
-## License
+## Contributing, support and security
 
-MIT
+- Bugs and ideas: [issues](https://github.com/5omeOtherGuy/slab-deck/issues).
+- Changes: [CONTRIBUTING.md](CONTRIBUTING.md).
+- Vulnerabilities: [SECURITY.md](SECURITY.md), never a public issue.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).
