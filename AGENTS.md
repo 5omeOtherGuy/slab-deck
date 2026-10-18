@@ -1,10 +1,15 @@
 ## Profile
 - Purpose: Claude Code control center: a status line script and a function-hooks mod in the SLAB design language
-- Stage: pre-release (repository standard 2026-10-17)
+- Stage: pre-release (repository standard 2026-10-18)
 - Gate: `scripts/gate` (CI job `gate`)
 - Landing: direct to main after a green gate; agents land: yes
 - Release: none; agents release: no
 - Outside issues and PRs: agents triage; outside PRs merge: owner approves
+- Sensitive paths: `AGENTS.md`, `.agents/`, `.githooks/`, `.github/workflows/`, `.github/dependabot.yml`,
+  `scripts/gate`, `.secretlintrc.json`, `package.json` and `package-lock.json` (the gate's locked tools),
+  `mod/slab-deck/types/index.d.ts` and `mod/slab-deck/.claude-plugin/plugin.json` (public interface), and the
+  code that runs commands: the quota refresher in `statusline-slab.sh` and the tmux and providers calls in
+  `mod/slab-deck/hooks/register.tsx`
 
 No deliberate deviations from the standard.
 
@@ -23,10 +28,12 @@ No deliberate deviations from the standard.
 4. Record user-visible changes under `## [Unreleased]` in `CHANGELOG.md`.
 
 Use a PR instead, squash-merged on a green `gate`, for public-interface changes (settings keys, environment
-variables, slash commands, the providers JSON shape, `types/index.d.ts`), CI or release configuration, work
-spanning several sessions, and anything another person sends. CI and public-interface PRs get an independent
-review before merge. Commit subjects follow Conventional Commits; public commits use the author's GitHub
-noreply address.
+variables, slash commands, the providers JSON shape, `types/index.d.ts`), CI or release configuration, changes
+to a sensitive path, work spanning several sessions, and anything another person sends. A PR touching a
+sensitive path, a public interface or CI gets an independent review (another agent or the owner) before merge,
+recorded on the PR against the reviewed head; a later push needs a new one. Commit subjects follow Conventional
+Commits; public commits use the author's GitHub noreply address, and an orb's `Co-authored-by:` trailer becomes
+`Co-authored-by: 5omeOtherGuy <268151429+5omeOtherGuy@users.noreply.github.com>` or is dropped before a push.
 
 ## Rules
 - No live tests. Never start a Claude Code session (`claude`, `claude -p`) to try the mod: it spends the
