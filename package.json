@@ -6,7 +6,7 @@
     "gate": "scripts/gate"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-code": "2.1.312",
+    "@anthropic-ai/claude-code": "2.1.318",
     "@secretlint/secretlint-rule-preset-recommend": "13.1.0",
     "secretlint": "13.1.0"
   }
